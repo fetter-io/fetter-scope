@@ -43,7 +43,7 @@ def report(status: str) -> dict:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--version", action="store_true")
-    ap.add_argument("--fake-version", default="5.0.0")
+    ap.add_argument("--fake-version", default="5.1.0")
     ap.add_argument("--fake-runs", help="a counter file, incremented at each launch")
     ap.add_argument("--fake-fail-first", type=int, default=0,
                     help="on the first N launches, print start then exit before any scan")

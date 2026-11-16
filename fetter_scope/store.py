@@ -77,6 +77,17 @@ class Store:
                             continue
                     yield p
 
+    def last_system(self) -> dict:
+        """The `system` of the latest stored entry that has one (newest file first), or {}."""
+        for path in reversed(self.event_files()):
+            with open(path, encoding="utf-8", errors="replace") as f:
+                lines = f.readlines()
+            for line in reversed(lines):
+                p = parse_line(line)
+                if p.event is not None and isinstance(p.event.get("system"), dict):
+                    return p.event["system"]
+        return {}
+
     def prune(self, retention_days: int) -> list[Path]:
         """Remove daily files older than `retention_days` (0 keeps all); returns those removed."""
         if retention_days <= 0:

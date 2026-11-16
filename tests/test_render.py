@@ -123,3 +123,13 @@ def test_span():
     assert render.span(T0, T0 + 600) == "2027-01-15 08:00–08:10"
     assert render.span(T0, T0) == "2027-01-15 08:00"
     assert render.span(T0, T0 + 86400) == "2027-01-15 08:00 – 2027-01-16 08:00"
+
+
+def test_vuln_sites_shown():
+    assert render.sites_text(None) == "" and render.sites_text(["/a"]) == "/a"
+    assert render.sites_text(["/a", "/b", "/c", "/d", "/e"]) == "/a, /b, /c (+2 more)"
+    d = run(report(10, "alert", new_vulns=[vuln("A") | {"sites": ["/proj/node_modules"]}]),
+            report(20, resolved_vulns=[{"package": pkg("x", "1"), "id": "Z", "sites": ["/old"]}]))
+    body = render.text(d)
+    assert "at /proj/node_modules" in body and "/old" in body
+    assert "/proj/node_modules" in render.html_body(d)

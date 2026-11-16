@@ -11,11 +11,11 @@ def run(capsys, *argv):
 def test_check_ok(home, capsys, monkeypatch):
     for k in ("REPORT_EMAIL_FROM", "REPORT_EMAIL_TO", "POSTMARK_SERVER_TOKEN"):
         monkeypatch.delenv(k, raising=False)
-    fake_fetter(home.fetter, "5.0.0")
+    fake_fetter(home.fetter, "5.1.0")
     home.config.write_text("[fetter]\nperiod = 60\n")
     code, out = run(capsys, "check", "--home", str(home.root))
     assert code == 0, out
-    assert f"fetter:  {home.fetter} (fetter-scope's own), version 5.0.0" in out
+    assert f"fetter:  {home.fetter} (fetter-scope's own), version 5.1.0" in out
     assert "mail:    disabled" in out
     assert f"{home.fetter} monitor-diff --period 60 --report-period 60 --control stdin json" in out
 
@@ -51,7 +51,7 @@ def test_run_refuses_config_errors(home, capsys):
 def test_run_refuses_old_fetter(home, capsys):
     fake_fetter(home.fetter, "4.0.0")
     assert main(["run", "--headless", "--home", str(home.root)]) == 1
-    assert "requires 5.0.0" in capsys.readouterr().err
+    assert "requires 5.1.0" in capsys.readouterr().err
 
 
 def test_run_refuses_missing_fetter(home, capsys):

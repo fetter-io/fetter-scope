@@ -287,3 +287,17 @@ def test_pending_window():
     assert pending_window({"digest": {"last_end": 300.0}}, 100.0, 500.0) == (300.0, 500.0)
     assert pending_window({}, None, 500.0) == (500.0, 500.0)
     assert pending_window({"digest": "bad"}, 100.0, 500.0) == (100.0, 500.0)
+
+
+def test_vuln_sites_from_latest_report():
+    # one advisory at two versions in one report: sites and versions merge; a later report replaces
+    d = run(report(10, "alert", new_vulns=[vuln("A", version="1.0") | {"sites": ["/b", "/a"]},
+                                           vuln("A", version="1.1") | {"sites": ["/c"]}]),
+            report(20, "alert", new_vulns=[vuln("A", version="1.1") | {"sites": ["/c"]}]),
+            report(30, resolved_vulns=[{"package": pkg("x", "1"), "id": "Z", "sites": ["/z"]}]))
+    [a] = d["vulns"]["new"]
+    assert a["sites"] == ["/c"] and a["versions"] == ["1.1"]
+    assert d["vulns"]["resolved"][0]["sites"] == ["/z"]
+    # before fetter 5.1.0, no sites
+    [b] = run(report(10, "alert", new_vulns=[vuln("B")]))["vulns"]["new"]
+    assert b["sites"] == [] and b["versions"] == ["1.0"]

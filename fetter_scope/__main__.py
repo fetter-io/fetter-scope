@@ -23,6 +23,7 @@ from fetter_scope import config as config_mod
 from fetter_scope import delivery, fetter_bin, render
 from fetter_scope.digest import last_digest_end
 from fetter_scope.scheduler import Mailer
+from fetter_scope.sites import Inventory, open_inventory
 from fetter_scope.home import Home
 from fetter_scope.store import Store
 from fetter_scope.supervisor import Runtime, follow, print_followed
@@ -102,17 +103,18 @@ def cmd_tui(args: argparse.Namespace) -> int:
     cfg.home.ensure()
     store = Store(cfg.home)
     mailer = Mailer(cfg, store)
-    model = Model(feed_limit=cfg.tui.feed_limit)
+    model = Model(feed_limit=cfg.tui.feed_limit, inventory=open_inventory(store))
     since = last_digest_end(store.read_state())
     for p in store.iter_entries(since=since if since is not None else time.time() - 86400):
         model.add(p)
     model.fetter = "not running"           # until this run's launch
     runtime = Runtime(fetter_bin.monitor_diff_command(resolved.path, cfg.fetter), store,
                       out=None, retention_days=cfg.store.retention_days, mailer=mailer,
-                      signals=False)
+                      signals=False, inventory=model.inventory)
     app = ScopeApp(model, runtime=runtime, store=store, mailer=mailer, period=cfg.fetter.period,
                    baseline=cfg.fetter.baseline or "rolling", fetter_version=probe.version_str,
-                   theme=cfg.tui.theme)
+                   theme=cfg.tui.theme,
+                   load_config=lambda: config_mod.load(cfg.home, args.config))
     runtime.tap = app.ingest
     app.run()
     return 0
@@ -129,7 +131,8 @@ def cmd_run(args: argparse.Namespace) -> int:
     store = Store(cfg.home)
     headless = Runtime(fetter_bin.monitor_diff_command(resolved.path, cfg.fetter),
                         store, out=lambda s: print(s, flush=True),
-                        retention_days=cfg.store.retention_days, mailer=Mailer(cfg, store))
+                        retention_days=cfg.store.retention_days, mailer=Mailer(cfg, store),
+                        inventory=open_inventory(store))
     return asyncio.run(headless.run())
 
 
@@ -151,7 +154,9 @@ def cmd_attach(args: argparse.Namespace) -> int:
     cfg = config_mod.load(home, args.config)
     # fetter-scope's own events/ directory: its home's state gives the digest period
     store = Store(Home(path.parent)) if path.is_dir() and path.name == "events" else None
-    model = Model(feed_limit=cfg.tui.feed_limit, attached=True)
+    # with a home, its saved inventory; the followed stream tops it up (earlier reports are skipped)
+    model = Model(feed_limit=cfg.tui.feed_limit, attached=True,
+                  inventory=open_inventory(store) if store is not None else Inventory())
     ScopeApp(model, follow_path=path, store=store, period=cfg.fetter.period,
              baseline=cfg.fetter.baseline or "rolling", theme=cfg.tui.theme).run()
     return 0

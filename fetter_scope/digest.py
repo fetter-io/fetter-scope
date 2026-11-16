@@ -203,6 +203,26 @@ def _violation_key(v: dict) -> tuple:
 
 
 @dataclass
+class _Where:
+    """Per vulnerability key, the sites and versions named by the latest report naming it: a
+    report has one finding per package version, and the fold keys by package, not version."""
+    seen: dict[tuple, tuple[float | None, set, set]] = field(default_factory=dict)
+
+    def see(self, key: tuple, v: dict, t: float | None) -> None:
+        prev = self.seen.get(key)
+        if prev is None or prev[0] != t:
+            prev = (t, set(), set())
+            self.seen[key] = prev
+        prev[1].update(s for s in v.get("sites") or [] if isinstance(s, str))
+        if version := (v.get("package") or {}).get("version"):
+            prev[2].add(str(version))
+
+    def get(self, key: tuple) -> dict:
+        _, sites, versions = self.seen.get(key, (None, set(), set()))
+        return {"sites": sorted(sites), "versions": sorted(versions)}
+
+
+@dataclass
 class _Fold:
     packages: _Packages = field(default_factory=_Packages)
     origins: _Presence = field(default_factory=_Presence)
@@ -210,6 +230,7 @@ class _Fold:
     hooks: _Presence = field(default_factory=_Presence)
     vulns: _Presence = field(default_factory=_Presence)
     violations: _Presence = field(default_factory=_Presence)
+    where: _Where = field(default_factory=_Where)
 
     def report(self, r: dict, t: float | None) -> None:
         ch = r.get("changes") or {}
@@ -223,8 +244,10 @@ class _Fold:
             self.hooks.see(_hook_key(c), c.get("change"), c, t)
         for v in r.get("new_vulns") or []:
             self.vulns.see(_vuln_key(v), "added", v, t)
+            self.where.see(_vuln_key(v), v, t)
         for v in r.get("resolved_vulns") or []:
             self.vulns.see(_vuln_key(v), "removed", v, t)
+            self.where.see(_vuln_key(v), v, t)
         for v in r.get("new_violations") or []:
             self.violations.see(_violation_key(v), "added", v, t)
         for v in r.get("resolved_violations") or []:
@@ -346,9 +369,13 @@ def fold(entries: Iterable[dict], start: float, end: float, *,
     v_new, v_res, v_tr = f.vulns.net()
     x_new, x_res, x_tr = f.violations.net()
 
+    def where(item: dict) -> dict:
+        return f.where.get(_vuln_key(item))
+
     def vuln_new(tr: _Track) -> dict:
-        # the latest details, with the first source seen
-        return _with_times(tr, tr.last_item | {"source": tr.first_item.get("source")})
+        # the latest details, with the first source seen, and where it is now
+        return _with_times(tr, tr.last_item | {"source": tr.first_item.get("source")}
+                           | where(tr.last_item))
 
     transient = {
         "packages": pkg_transient,
@@ -356,6 +383,7 @@ def fold(entries: Iterable[dict], start: float, end: float, *,
         "sites": [_with_times(tr, tr.first_item) for tr in s_tr],
         "hooks": [_with_times(tr, tr.first_item) for tr in h_tr],
         "vulns": [_with_times(tr, tr.first_item if tr.first_change == "added" else tr.last_item)
+                  | where(tr.last_item)
                   | {"what": "fixed within the period" if tr.first_change == "added"
                      else "resolved then reintroduced"} for tr in v_tr],
         "violations": [_with_times(tr, tr.first_item) for tr in x_tr],
@@ -411,7 +439,8 @@ def fold(entries: Iterable[dict], start: float, end: float, *,
         "hooks": {"added": [_with_times(tr, tr.last_item) for tr in h_add],
                   "removed": [_with_times(tr, tr.last_item) for tr in h_rem]},
         "vulns": {"new": new_vulns,
-                  "resolved": [_with_times(tr, tr.last_item) for tr in v_res]},
+                  "resolved": [_with_times(tr, tr.last_item) | where(tr.last_item)
+                               for tr in v_res]},
         "violations": {"new": [_with_times(tr, tr.last_item) for tr in x_new],
                        "resolved": [_with_times(tr, tr.last_item) for tr in x_res]},
         "transient": transient,

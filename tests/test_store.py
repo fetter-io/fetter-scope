@@ -75,3 +75,15 @@ def test_state_unreadable(home):
     assert Store(home).read_state() == {}
     home.state.write_text("[1]")
     assert Store(home).read_state() == {}
+
+
+def test_last_system(home):
+    clock = Clock(ts("2026-11-15T12:00:00"))
+    store = Store(home, now=clock)
+    assert store.last_system() == {}
+    store.append(parse_line('{"event":"scan","system":{"hostname":"a"},"time":{"secs":1,"nanos":0}}'))
+    clock.t = ts("2026-11-16T12:00:00")
+    store.append(parse_line('{"event":"scan","system":{"hostname":"b"},"time":{"secs":2,"nanos":0}}'))
+    store.append(own("stderr", line="x"))
+    store.close()
+    assert store.last_system() == {"hostname": "b"}

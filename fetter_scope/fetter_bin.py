@@ -31,8 +31,8 @@ from fetter_scope import __version__
 from fetter_scope.config import FetterConfig
 from fetter_scope.home import Home
 
-FETTER_VERSION = "5.0.0"
-MIN_VERSION = (5, 0, 0)
+FETTER_VERSION = "5.1.0"
+MIN_VERSION = (5, 1, 0)
 PYPI_URL = "https://pypi.org/pypi/fetter/{version}/json"
 RUSTUP_URL = "https://rustup.rs"
 VERSION_TIMEOUT = 30
@@ -91,7 +91,7 @@ def install_hint(resolved: Resolved) -> str:
 
 
 def probe(path: Path, run: Callable = subprocess.run) -> Probe:
-    """Run `<path> --version`; refuse a missing binary, an unrecognized one, or one below 5.0.0."""
+    """Run `<path> --version`; refuse a missing binary, an unrecognized one, or one below `MIN_VERSION`."""
     if not path.exists():
         return Probe(path, error=f"no fetter binary at {path}")
     try:

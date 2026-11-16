@@ -17,6 +17,7 @@ launch, exits, stderr lines, commands sent, protocol errors), go to one `sink` i
 attach mode, which has no control channel.
 """
 import asyncio
+import logging
 import os
 import signal
 import subprocess
@@ -31,6 +32,9 @@ from fetter_scope.store import Store
 
 if TYPE_CHECKING:
     from fetter_scope.scheduler import Mailer
+    from fetter_scope.sites import Inventory
+
+log = logging.getLogger(__name__)
 
 LINE_LIMIT = 64 * 1024 * 1024        # one report can be large; asyncio's default is 64 KiB
 CLEAN_STOP_CODES = (0, 3)
@@ -484,6 +488,7 @@ class Runtime:
     mail_every: float = 30
     tap: Callable[[Parsed], None] | None = None
     signals: bool = True
+    inventory: "Inventory | None" = None       # open vulnerabilities per site, saved per report
 
     def __post_init__(self):
         self._tasks: set[asyncio.Task] = set()
@@ -495,6 +500,13 @@ class Runtime:
             self.out(log_line(p))
         if self.tap is not None:
             self.tap(p)
+        if self.inventory is not None and not p.own and p.kind in ("start", "report"):
+            self.inventory.apply(p.event)          # a no-op when the TUI's model already did
+            if p.kind == "report":
+                try:
+                    self.inventory.save(self.store.home.sites)
+                except OSError as e:
+                    log.warning("cannot save %s: %s", self.store.home.sites, e)
         if self.mailer is not None and self.mailer.on_entry(p):
             task = asyncio.get_running_loop().create_task(self._mail_tick())
             self._tasks.add(task)

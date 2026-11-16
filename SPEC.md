@@ -18,12 +18,46 @@ This document is preliminary: it fixes the scope and the contract with fetter, a
 - **Read-only toward the system.** fetter-scope never installs, removes or "accepts" anything except through fetter's own commands. For example, a fixed baseline is written by `fetter monitor-diff save`.
 - **Local and private.** Reports contain user names, host names and paths. They go only to the configured recipient, and nothing is sent anywhere else.
 
+## Picking this up
+
+*Last updated 2026-11-16, after milestone 8 (Sites tab) and the move to fetter 5.1.0. Update this section at the end of every session; Milestones is the source of truth for progress.*
+
+### Where we are
+
+- **Milestones 1–6 and 8 are done**; 7 (launchd and systemd examples, README) remains.
+- **Uncommitted**: milestones 5, 6 and 8 and the 5.1.0 move are in the working tree (new: `fetter_scope/{model,sites,tui}.py`, `tests/test_{model,sites,tui,tui_keys}.py`); check `git status`. The maintainer commits. fetter-rs has an uncommitted SPEC known-issue entry (hook-derived packages without sites).
+- **fetter**: requires and installs 5.1.0 (`FETTER_VERSION`, `MIN_VERSION` in `fetter_bin.py`), whose vulnerability findings carry `sites`. 5.1.0 is on crates.io but **not yet on PyPI**, so `install-fetter` without a Rust toolchain fails until the wheel is published.
+- **Health**: `uv run pytest` reports 258 passed (≈40 s; no test runs a real fetter, sends mail or uses the network). `ruff check` has one old finding, `tests/test_delivery.py:105` (E731, a lambda assigned to a name).
+- **Verified on this machine** (full home scan, 7,336 packages): the Sites tab lists 102 sites with open vulnerabilities from 3,556 findings, 3,540 with sites. That needed fetter's 5.0.0 rolling baseline removed so the next report re-established it (see Displays, Sites); the old file is kept as `~/.cache/io.fetter/monitor_diff_v1_<hash>.json.bak-2026-11-16` and can be deleted. An OSV 503 during one report was handled as designed (no change to the open set; fetter kept its baseline's vulnerabilities).
+
+### Code map
+
+| Concern | Where |
+|---|---|
+| CLI: `tui`, `run [--headless]`, `attach`, `digest`, `check`, `install-fetter` | `fetter_scope/__main__.py` |
+| fetter binary: resolve, version check, install (cargo, else PyPI wheel) | `fetter_scope/fetter_bin.py` |
+| Event parsing, schema 1 TypedDicts, one-line summaries | `fetter_scope/events.py` |
+| Launch, restart, control channel, attach; `Runtime` (store, mail, inventory per entry) | `fetter_scope/supervisor.py` |
+| `events/`, `state.json`, retention | `fetter_scope/store.py`; paths in `fetter_scope/home.py` |
+| Digest folding (pure) / HTML and text / delivery / schedule | `fetter_scope/{digest,render,delivery,scheduler}.py` |
+| Open vulnerabilities per site (`Inventory`, `sites.json`, `site_rows`) | `fetter_scope/sites.py` |
+| TUI model (no Textual) / Textual app, tabs, details, keys | `fetter_scope/model.py` / `fetter_scope/tui.py` |
+| Fake fetter for supervisor and TUI tests; recorded streams | `tests/fake_fetter.py`; `tests/fixtures/streams/` |
+
+### Next
+
+1. **Milestone 7**: launchd and systemd examples for `run --headless`, and a README covering setup, the tabs and keys, mail configuration and the 5.0.0 upgrade.
+2. **fetter: sites of hook-derived packages** (fetter SPEC, Known issues): `diff_report::package_sites` should fall back to the pre-commit config a derived package (e.g. `black` from `psf/black`) was mapped from; 16 findings here lack sites because of it. A fetter patch release; fetter-scope then only bumps `FETTER_VERSION`.
+3. **Re-record the fixture streams** with fetter 5.1.0 (`tests/fixtures/streams/`, recorded under 5.0.0), so the fixtures carry `sites` and the TUI tests exercise them from real output rather than hand-built reports.
+4. **Release check**: confirm the 5.1.0 wheel is on PyPI, then try `install-fetter --method pypi`.
+5. **Open questions** below, notably transient changes between reports, net classification after folding, report acknowledgement, and control in attach mode.
+
 ## Contract with fetter
 
-Requires fetter 5.0.0 or later (the first release with `monitor-diff`, its per-ecosystem counts, and its control channel). At start, fetter-scope runs `fetter --version` and refuses an older binary with a clear message.
+Requires fetter 5.1.0 or later (5.0.0 was the first release with `monitor-diff`, its per-ecosystem counts and its control channel; 5.1.0 adds the sites of each vulnerability finding, which the Sites tab needs). At start, fetter-scope runs `fetter --version` and refuses an older binary with a clear message.
 
 **The fetter binary:** fetter-scope runs its own copy of fetter, not whatever `fetter` is on `PATH` (often an older PyPI install). fetter is not a Python dependency.
-- The binary lives at `~/.fetter-scope/bin/fetter` (see Storage). fetter-scope pins the fetter version it installs (`FETTER_VERSION`, 5.0.0 at first).
+- The binary lives at `~/.fetter-scope/bin/fetter` (see Storage). fetter-scope pins the fetter version it installs (`FETTER_VERSION`, 5.1.0; 5.0.0 at first).
 - `fetter-scope install-fetter [--method auto|cargo|pypi] [--force]` installs it:
   1. **cargo** (when `cargo` is on `PATH`): `cargo install fetter --version =FETTER_VERSION --locked --root ~/.fetter-scope`.
   2. **PyPI** (no Rust toolchain, or `--method pypi`): download the `fetter==FETTER_VERSION` wheel with `pip download --no-deps --only-binary :all:` and extract only its binary into `~/.fetter-scope/bin/`. Nothing is installed into the Python environment.
@@ -151,14 +185,22 @@ Folding is pure: event dicts in, a JSON-serializable digest dict out (stored wit
   - the pending digest's counts.
 - **Alerts:** one row per alert item, its type first: `vuln`, `hook`, `downgrade`, `violation`. Then ecosystem, package or site, detail, report time, and whether it has been mailed.
   - For a vulnerability, the detail is the ID, CVSS score, source and summary.
-  - Enter opens a detail screen: the full summary, severity vector, OSV URL (with copy), and the sites holding the package. The stream names a package's sites only in package changes, so for a package unchanged since the baseline the sites are not known (see Open questions).
+  - Enter opens a detail screen: the full summary, severity vector, OSV URL (with copy), and the sites holding the package. fetter 5.1.0 names them in the finding (`sites`), which the Alerts row also shows; for a finding stored from an earlier fetter they come from package changes only, so for a package unchanged since the baseline they are not known.
 - **Changes:** every package change from reports, with the kind (added, removed, upgraded, downgraded, changed), ecosystem, site, name, from and to, and time.
   - Filters (`/`, per tab): `key:value` words match a column (e.g. `eco:npm kind:down site:proj`), other words match any column; all case-insensitive substrings.
   - A toggle switches between "since last digest" (the folded view) and "all reports".
 - **Live:** the `scan` events' changes since the previous scan as they arrive, newest first. These come before fetter's next report, so the live view leads the report.
-- **Vulnerabilities:** current new and resolved vulnerabilities for the pending digest period, sortable by CVSS, with copy for the ID and URL.
-- **Hooks:** added and removed hooks, with their full detail. A hook's content is code; it is shown verbatim and never run.
-- **Mail:** transport and recipients (the address only, never credentials); the last sent time and result; the next digest time; a preview of the pending digest (text body); and the history of sent mails.
+- **Vulnerabilities:** new, resolved and transient vulnerabilities for the pending digest period (marked when an alert mail already sent them), sortable by CVSS, with copy for the ID and URL and a detail screen (Enter).
+- **Sites:** one row per site, so the sites that need attention show first. Columns: CVSS max, CVSS median, open vulnerabilities, critical (≥ 9.0) and high (7.0 to 9.0) counts, unscored count, affected packages, ecosystem, path, and the time of the site's latest change. Sorted by CVSS max, then open count, highest first; column headers re-sort; filterable (`site:`, `eco:`, `id:`, `name:`).
+  - A vulnerability is counted once per site, package version and ID. The median and max are over the scored ones; unscored ones are counted apart, never treated as 0.
+  - "Open" means reported new and not since resolved, over all history, not the digest period. It is kept by `sites.Inventory` and saved as `sites.json` (see Storage), so it outlives `events/` retention. With a fixed baseline each report replaces the set (see below); vulnerabilities present in the baseline itself are never reported, so they are not shown.
+  - Sites named by package, hook or site changes are listed too, with zero counts, so a site that was cleaned up stays visible; a site reported removed is dropped. A site whose packages never changed and never had a vulnerability is not in the stream and is not listed.
+  - Findings with no sites are grouped under "(site not named)": those stored from a fetter before 5.1.0, and (fetter 5.1.0) vulnerabilities in packages the audit derives from pre-commit hooks (see Open questions). A rolling baseline does not report them again, so after upgrading, remove fetter's rolling baseline (`monitor_diff_v1_*.json` in fetter's cache directory: `~/.cache/io.fetter` on Linux, `~/Library/Caches/io.fetter` on macOS) while fetter-scope is stopped. The next report re-establishes it (no `baseline_time`) and lists every existing vulnerability with its sites.
+  - Such a report, and any report against a fixed baseline, is the whole set, so it replaces the inventory's open vulnerabilities (keeping each one's first-seen time); not when the report has an `audit_error`, since its findings are then incomplete. fetter, for its part, keeps the baseline's vulnerabilities through a failed audit (`monitor_diff.rs`), so the next good report compares against the right set; an OSV 503 on 2026-11-16 left both unchanged.
+  - Verified 2026-11-16 on a full home scan: after removing the 5.0.0 baseline, the re-establishing report listed 3,556 vulnerabilities, 3,540 with sites, across 102 sites (the worst: a Python virtualenv with 813 open, CVSS max 10).
+  - Enter opens the site's detail: its counts and its open vulnerabilities by CVSS, each with ID, package, first seen, summary and OSV URL; `c` copies the path.
+- **Hooks:** added, removed and transient hooks for the pending digest period, with their full detail (Enter). A hook's content is code; it is shown verbatim and never run.
+- **Mail:** status, transport and recipients (the address only, never credentials); the schedule and next digest time; the last digest's time and result (with its error); the alert mode and state; the history of sent and failed mails; and a preview of the pending digest (subject and text body).
 - **Log:** raw events and fetter stderr, filterable by event type. Errors are highlighted.
 
 **Keys:**
@@ -169,15 +211,16 @@ Folding is pure: event dicts in, a JSON-serializable digest dict out (stored wit
 | `r` | report now (`report` on the control channel; launch mode only) |
 | `m` | send the digest now (sends `report` first in launch mode, then sends the digest when that report or scan event arrives, or after 2 minutes) |
 | `p` | preview the digest's HTML in a browser (a temp file) |
-| `c` | copy the selected row's package, ID or URL (OSC 52, plus the clipboard tool when present, as in assistant-bom) |
+| `c` | copy the selected row's package, ID or hook name (OSC 52, plus the clipboard tool when present, as in assistant-bom); also in a detail screen |
+| `u` | copy the selected row's URL (a vulnerability's OSV page) |
 | `/` | filter the current tab; Escape clears |
 | `t` | Changes: folded since the last digest, or every report |
-| `1`–`5` | switch tabs |
-| Enter, Escape | open and close an alert's detail |
-| `l` | reload `config.toml` (mail settings only; changing fetter settings needs a restart) |
+| `1`–`9` | switch tabs (Overview, Alerts, Changes, Live, Vulnerabilities, Sites, Hooks, Mail, Log) |
+| Enter, Escape | open and close a row's detail (alert, vulnerability, hook, site) |
+| `l` | reload `config.toml` (mail settings and credentials only; a change to fetter settings is reported as needing a restart; a file with errors is not applied) |
 | `q` | quit; fetter is stopped (`stop`, then terminated after 30 s; `q` again terminates it now) |
 
-Column headers sort, as in assistant-bom.
+Column headers sort, as in assistant-bom: ascending, then descending, then the original order; numbers numerically and empty cells last. Vulnerabilities starts by CVSS, highest first. While `s`, `r` or `m` waits on fetter or the mail service, the header says so ("rescanning…", "reporting…", "sending digest…"); the UI stays responsive.
 
 **Headless:** `fetter-scope run --headless` runs the same supervisor, storage and mail scheduler without the TUI, for a launchd or systemd service. The TUI can then `attach` to the stored stream to view it. `fetter-scope`, `tui` and `run` without `--headless` open the TUI running fetter; it first replays the pending period from `events/`, so the tabs are not empty at start.
 
@@ -188,7 +231,7 @@ Column headers sort, as in assistant-bom.
 - **Body:** HTML with inline styles (no classes or SVG), plus a text alternative.
   - Section order: alerts first (new vulnerabilities by CVSS, new hooks, downgrades, new violations), then problems, transient items, and package changes grouped by ecosystem and site. Resolved items come last.
   - The body stays under Gmail's ~102 KB clipping limit. Long change lists are cut with "and N more", and the full folded digest is attached as JSON.
-- **Schedule:** a digest is due at the first boundary after the last one was made. Boundaries are a fixed reference (a Monday, moved to `at` and `weekday`) plus multiples of `every`, in local wall-clock time, so a daily digest stays at `at` across DST and a `6h` or `2d` schedule is the same from run to run. It is sent if the digest is eventful (see Digest), or always when `send_unchanged` is set; otherwise its period still ends. A digest whose boundary passed while the app was not running is sent at the next start, covering the time since the last one. Without any digest state, the first digest covers everything already stored.
+- **Schedule:** a digest is due at the first boundary after the last one was made. Boundaries are a fixed reference (a Monday, moved to `at` and `weekday`) plus multiples of `every`, in local wall-clock time, so a daily digest stays at `at` across DST and a `6h` or `2d` schedule is the same from run to run. It is sent if the digest is eventful (see Digest), or always when `send_unchanged` is set; otherwise its period still ends. A digest whose boundary passed while the app was not running is sent at the next start, covering the time since the last one. Without any digest state, the first digest covers everything already stored. A digest of a quiet period (no entries) takes the host from the latest stored entry, so a heartbeat still names it.
 - **Period edges:** a period ends just after the latest entry it includes, not at the moment of sending. fetter writes in time order, so an event still in the pipe when a mail is built falls in the next period instead of between the two.
 - **Immediate alerts:** when a `report` with status `alert` arrives and `alerts = "immediate"`, a short alert mail (the alert sections only, no attachment) covering the alert reports since the last alert mail is sent, rate-limited by `alert_min_interval`; one arriving sooner waits and joins the next. Those items are still included in the digest, marked "mailed": state.json keeps the spans the alert mails covered until a digest passes them.
 - **Failure handling:** a failed send is retried with backoff (1 minute, doubling to an hour), and is shown in the Mail tab. The digest period does not advance until the send succeeds, so nothing is dropped. Every attempt is logged as a `mail` entry in `events/`, so a failed one is also a problem in the next digest.
@@ -203,11 +246,13 @@ config.toml                 configuration (or --config FILE)
 .env                        credentials
 bin/fetter                  fetter-scope's own fetter (see Contract with fetter)
 events/YYYY-MM-DD.jsonl     every event line as received, plus fetter-scope's own entries, one per line; daily files (local date)
+sites.json                  open vulnerabilities and known sites, folded from every report (`through`: the last report applied); rebuilt from `events/` when missing
 state.json                  digest (period start, last run, result, backoff), alerts (covered spans, pending, backoff), mail history, the running fetter
 mail/YYYY-MM-DDTHHMM.json   each digest sent (the folded dict), with .html and .txt beside it; alert mails as YYYY-MM-DDTHHMM-alert.*
 ```
 
 - On start, the pending period's reports are rebuilt from `events/` since `state.json`'s last digest time. A restart therefore loses nothing.
+- `sites.json` is written (temp file and rename) after each report by `run` and the TUI running fetter; on start it is topped up from stored reports after its `through`. `attach` reads it from the home of an `events/` directory it follows.
 - Retention: `events/` older than 90 days is removed (`[store] retention_days`). Files under `mail/` are kept.
 - Writes are append-and-flush for events, and temp-file-and-rename for `state.json`.
 - fetter-scope's own entries are JSON objects shaped like events, with `"source": "fetter-scope"` (fetter's readers ignore them as unknown events): `launch` (pid, command), `fetter-exit` (code, expected, restart_in, terminated), `stderr` (line), `stdout` (a stdout line that is not an event), `control` (a command written), `protocol-error`, `supervisor-error` (restarts stopped), and `stale-stop` (a fetter left running by an earlier fetter-scope was stopped).
@@ -232,6 +277,7 @@ fetter_scope/
   delivery.py           Postmark and SMTP; send_digest, send_alert → sent | failed | skipped
   scheduler.py          digest and alert timing; pure given "now"
   model.py              what the TUI shows, folded from entries (no Textual; tested directly)
+  sites.py              open vulnerabilities per site over all history (Inventory; folding pure, saved as sites.json)
   tui.py                the Textual app
 tests/
   fixtures/streams/     recorded monitor-diff streams (user, host and paths made generic, as fetter's tests/fixtures/monitor)
@@ -256,6 +302,7 @@ No test runs a real fetter scan, sends mail, or touches the network.
 - **Supervisor:** `fake_fetter.py` for reading, restart with backoff, the three-exit stop, stopping on quit (`stop`, then terminate after the timeout), the version check, and attach-mode following of an appended file. Control channel: `s` is ignored while a request is outstanding, the next `request` scan acknowledges it, an unknown-command `error` is logged, a broken pipe is handled as an exit, and a stale pid in `state.json` is stopped.
 - **Integration (optional, marked):** one test runs the real fetter on a temporary `Cargo.lock` project with a stubbed `--cache-directory` and drives `scan`, `report` and `stop`; skipped when fetter-scope's fetter binary is not installed or the network is unavailable.
 - **Store:** restart rebuilds the pending period, plus retention.
+- **Sites:** new minus resolved across reports, resolution by package version, idempotent re-application, a fixed baseline replacing the set, sites from changes and removal, per-site counts and order, `sites.json` saved per report and topped up from events after pruning.
 - **Render:** a golden HTML and text for a fixture digest; the size limit with "and N more".
 - **Delivery:** Postmark via a stubbed `urlopen`, and SMTP via a stubbed `smtplib.SMTP`. A failure does not advance the period.
 - **TUI:** Textual pilot tests: tabs populate from a fixture stream, filters, the detail screen, copy, and the `m` and `s` keys with a fake supervisor and delivery.
@@ -267,8 +314,9 @@ No test runs a real fetter scan, sends mail, or touches the network.
 3. [x] Digest folding and render (text and HTML), `digest --preview`.
 4. [x] Delivery and scheduler: Postmark and SMTP, digests and immediate alerts, catch-up, `state.json`.
 5. [x] TUI: header, Overview, Alerts (with detail), Changes, Live, Log.
-6. [ ] TUI: Vulnerabilities, Hooks, Mail tabs; keys; sorting and copy.
+6. [x] TUI: Vulnerabilities, Hooks, Mail tabs; keys; sorting and copy.
 7. [ ] launchd and systemd examples, README.
+8. [x] TUI: Sites tab (per-site open vulnerabilities and CVSS summary), with the open-vulnerability state it needs.
 
 ## Out of scope for now
 
@@ -282,7 +330,9 @@ No test runs a real fetter scan, sends mail, or touches the network.
 - **Transient changes in fetter:** fetter's reports already miss changes that appear and disappear between two of its reports. Should fetter-scope set `report_period = period` by default so that every scan can be reported (the default above), or should fetter accumulate them itself (fetter SPEC milestone 27 follow-up)?
 - **Net classification after folding:** for the net kind of a folded package change (first `from` → last `to`), should fetter add a `compare` field, or a small `fetter compare-versions` command, rather than relying on the last step's kind?
 - **Report acknowledgement:** after a `report` command, a `request` scan with no report following means nothing changed, but a reader can only tell by waiting. Should fetter always write a report for a `report` command (as `--report always` does), or emit a small `report-skipped` event?
-- **Sites of an unchanged package:** the alert detail should list the sites holding a vulnerable package, but the stream names sites only in package changes. Should `VulnFinding` carry the package's sites, so a `published` advisory against an unchanged package can say where it is installed?
+- **Sites of hook-derived packages:** fetter 5.1.0 names no sites for a vulnerability in a package it derives from a pre-commit hook (e.g. `black` from `psf/black`); the site should be the `.pre-commit-config.yaml`. Recorded as an open known issue in fetter's SPEC; fetter-scope needs no change when it is fixed.
 - **Control in attach mode:** should fetter add a file or socket control channel (`--control fifo:PATH`?) so a TUI attached to a service's stream can rescan? Until then, attach mode is read-only.
 - **Settled:** a rescan trigger (fetter's `--control stdin`) and per-ecosystem counts (`scan.counts`) were added to fetter before 5.0.0.
+- **Settled:** `VulnFinding` and `VulnResolved` carry `sites` (optional, from fetter 5.1.0; the stream stays at schema 1), so a `published` advisory against an unchanged package says where it is installed. The digest keeps the sites of the latest report naming each vulnerability, and mail shows them.
+- **Settled:** the Sites tab's open vulnerabilities are kept by fetter-scope (`sites.json`), not sent by fetter: fetter 5.1.0 reports new and resolved findings only. If fetter later adds the current set to each report, it would cover a fixed baseline's own vulnerabilities and a fresh install without history.
 - **Settled:** data, configuration and the fetter binary live in `~/.fetter-scope/`, not a repository directory, since the events contain local paths.

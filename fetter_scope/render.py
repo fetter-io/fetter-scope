@@ -93,7 +93,10 @@ def _alerts(d: dict) -> list[Section]:
         meta=" · ".join(x for x in ((v.get("package") or {}).get("ecosystem"),
                                      _pkg(v.get("package")), v.get("source"),
                                      "mailed" if v.get("mailed") else "") if x),
-        detail=v.get("summary", ""), url=v.get("url", ""), tone="bad")
+        detail="\n".join(x for x in (v.get("summary", ""),
+                                      f"at {sites_text(v.get('sites'))}" if v.get("sites") else "")
+                          if x),
+        url=v.get("url", ""), tone="bad")
         for v in d["vulns"]["new"]]
     if vulns:
         out.append(Section("New vulnerabilities", vulns, tone="bad"))
@@ -135,6 +138,13 @@ def _violation_item(v: dict, tone: str) -> Item:
     sites = ", ".join(v.get("sites") or [])
     return Item(title=v.get("explain", "?"),
                 meta=" · ".join(x for x in (v.get("ecosystem"), who, sites) if x), tone=tone)
+
+
+def sites_text(sites: list[str] | None, most: int = 3) -> str:
+    """`a, b, c (+2 more)`; "" when no site is known."""
+    sites = sites or []
+    shown = ", ".join(sites[:most])
+    return shown + (f" (+{len(sites) - most} more)" if len(sites) > most else "")
 
 
 def _clip(s: str, n: int) -> str:
@@ -205,7 +215,8 @@ def _changes(d: dict) -> list[Section]:
 
 def _resolved(d: dict) -> list[Section]:
     out = []
-    v = [Item(title=f"{x.get('id', '?')} in {_pkg(x.get('package'))}", meta=when(x.get("last")),
+    v = [Item(title=f"{x.get('id', '?')} in {_pkg(x.get('package'))}",
+              meta=" · ".join(y for y in (when(x.get("last")), sites_text(x.get("sites"))) if y),
               tone="good") for x in d["vulns"]["resolved"]]
     h = [Item(title=(x.get("hook") or {}).get("name", "?"),
               meta=f"{_where(x.get('ecosystem'), x.get('site'))} · {when(x.get('last'))}")
@@ -285,8 +296,7 @@ def text(d: dict, cap: int | None = None, attached: bool = True,
         for it in shown:
             out.append(f"- {it.title}")
             for extra in (it.meta, it.detail, it.url):
-                if extra:
-                    out.append(f"  {extra}")
+                out += [f"  {line}" for line in extra.splitlines() if line]
             if it.code:
                 out += [f"    {line}" for line in it.code.splitlines()]
         if len(shown) < len(s.items):
@@ -311,7 +321,8 @@ def _item_html(it: Item) -> str:
     if it.meta:
         parts.append(f'<div style="color:{C["muted"]};font-size:12px">{_e(it.meta)}</div>')
     if it.detail:
-        parts.append(f'<div style="margin-top:2px">{_e(it.detail)}</div>')
+        parts.append(f'<div style="margin-top:2px">'
+                     f'{"<br>".join(_e(line) for line in it.detail.splitlines())}</div>')
     if it.url.startswith(("https://", "http://")):
         parts.append(f'<div style="font-size:12px"><a href="{_e(it.url)}" '
                      f'style="color:{C["accent"]}">{_e(it.url)}</a></div>')

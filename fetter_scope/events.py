@@ -104,11 +104,13 @@ class VulnFinding(TypedDict):
     severity: NotRequired[str]
     score: NotRequired[float]
     url: str
+    sites: NotRequired[list[str]]     # paths holding the package (fetter 5.1.0)
 
 
 class VulnResolved(TypedDict):
     package: Package
     id: str
+    sites: NotRequired[list[str]]     # paths that held it at the baseline (fetter 5.1.0)
 
 
 class Violation(TypedDict):

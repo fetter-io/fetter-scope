@@ -170,6 +170,8 @@ class Mailer:
         d = fold(entries, start, end, period=self.cfg.fetter.period,
                  baseline=self.cfg.fetter.baseline or "rolling")
         d["end"] = shown_end
+        if not d["system"]:                  # a quiet period: say which host it is about
+            d["system"] = self.store.last_system()
         windows = self._part("alerts").get("windows") or []
         if windows:
             for items in (d["vulns"]["new"], d["hooks"]["added"], d["violations"]["new"],

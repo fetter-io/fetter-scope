@@ -53,6 +53,10 @@ class Home:
     def state(self) -> Path:
         return self.root / "state.json"
 
+    @property
+    def sites(self) -> Path:
+        return self.root / "sites.json"
+
     def ensure(self) -> Path:
         """Create the root (mode 0700: events hold user names and local paths). Not used by `check`."""
         self.root.mkdir(mode=0o700, parents=True, exist_ok=True)

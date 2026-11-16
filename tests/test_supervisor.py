@@ -293,3 +293,20 @@ async def test_stop_while_launching():
     assert sup.status == "stopped"
     assert rec.of("fetter-exit")[-1]["expected"]
     assert len(rec.of("launch")) <= 1
+
+
+async def test_runtime_saves_open_vulns_per_report(home):
+    from fetter_scope.sites import Inventory
+    out = []
+    store = Store(home)
+    h = Runtime(cmd("--fake-replay", str(STREAMS / "changes.jsonl")), store, out=out.append,
+                timing=FAST, inventory=Inventory())
+    task = asyncio.create_task(h.run())
+    deadline = time.monotonic() + 10
+    while not home.sites.exists():
+        assert time.monotonic() < deadline, out
+        await asyncio.sleep(0.02)
+    await h.supervisor.stop()
+    assert await asyncio.wait_for(task, 10) == 0
+    saved = Inventory.load(home.sites)
+    assert len(saved.vulns) == len(h.inventory.vulns) > 0 and saved.through is not None
