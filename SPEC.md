@@ -53,7 +53,7 @@ A line that is not JSON, or an event with a `schema` greater than 1, is kept in 
 
 **Process lifecycle:**
 - **Unexpected exit:** fetter-scope restarts fetter with exponential backoff (5 s doubling to 10 min) and records a `fetter-exit` entry. Three exits in a row with no `scan` event in between stop the restarts and raise a visible error.
-- **Exit code 3:** this means an alert in run-once mode, which fetter-scope never uses. It is still treated as an unexpected exit.
+- **Exit code 3:** fetter exits with 3 when its last report was an alert. In run-once mode (unused here) that is the alert signal; fetter 5.0.0 also does it after `stop` when the last report was an alert (observed recording `tests/fixtures/streams/changes.jsonl`). So an exit with 0 or 3 after fetter-scope wrote `stop` is a clean stop; any exit not preceded by `stop` is unexpected.
 - **Stopping** (quit, or a configuration change that needs a restart): fetter-scope writes `stop`, waits up to 30 s for the process to exit (a scan in progress finishes first), then terminates it. A child killed mid-report does not advance the rolling baseline, so either way nothing is lost.
 
 **Control channel:** fetter is launched with `--control stdin`, and fetter-scope writes commands to its stdin, one per line, UTF-8, ending in `\n`:
@@ -62,7 +62,7 @@ A line that is not JSON, or an event with a `schema` greater than 1, is kept in 
 |---|---|---|
 | `scan` | scans now; a `scan` event with `trigger: "request"`. A report follows only if one is due by `--report-period`. | `s`: rescan now (the Live and Overview tabs update) |
 | `report` | scans now and reports whether or not one is due: a `scan` event with `trigger: "request"`, then a `report` event (unless nothing changed and `--report change`); the report timer restarts | `r`: report now; before `m` sends a digest, so it includes the current state |
-| `stop` | finishes the current scan or report, then exits with 0 | quit and restart |
+| `stop` | finishes the current scan or report, then exits with 0 (3 if the last report was an alert; see Exit code 3) | quit and restart |
 | anything else | an `error` event (`Unknown control command: …`); fetter keeps running | logged as a protocol error (a fetter-scope bug, or a fetter too old for a command) |
 
 Rules for the supervisor:
@@ -83,9 +83,14 @@ Rules for the supervisor:
 binary = ""                       # "" uses ~/.fetter-scope/bin/fetter; or an explicit path
 args = []                         # global args, e.g. ["-E", "python,npm", "--root", "~/src"]
 period = 300                      # seconds between scans
-report_period = 300               # seconds between fetter reports (each advances fetter's rolling baseline)
+report_period = 300               # seconds between fetter reports (each advances fetter's rolling baseline); defaults to period
+report = "change"                 # fetter's --report: "change", or "always" (a report every report period)
 baseline = ""                     # a fixed baseline file from `fetter monitor-diff save`; "" is rolling
-bound = ""                        # an allow list for validation; with bound_options, subset, superset, strict
+bound = ""                        # an allow list for validation; new violations are alerts
+bound_options = []                # with bound: extra dependency groups
+subset = false                    # with bound: fetter's --subset, --superset, --strict
+superset = false
+strict = false
 cvss = 0                          # 0 is no filter
 
 [mail]
@@ -102,6 +107,9 @@ subject_prefix = "fetter"
 [tui]
 theme = ""                        # a Textual theme name
 feed_limit = 2000                 # live change feed entries kept in memory
+
+[store]
+retention_days = 90               # events/ files older than this are removed; 0 keeps all
 ```
 
 **Credentials** come from the environment, after loading the `.env` beside `config.toml` (the process environment wins over it), never from `config.toml`:
@@ -195,7 +203,7 @@ mail/YYYY-MM-DDTHHMM.json   each digest sent (the folded dict), with .html and .
 ```
 
 - On start, the pending period's reports are rebuilt from `events/` since `state.json`'s last digest time. A restart therefore loses nothing.
-- Retention: `events/` older than 90 days is removed (configurable). Files under `mail/` are kept.
+- Retention: `events/` older than 90 days is removed (`[store] retention_days`). Files under `mail/` are kept.
 - Writes are append-and-flush for events, and temp-file-and-rename for `state.json`.
 
 ## Repository layout
@@ -246,7 +254,7 @@ No test runs a real fetter scan, sends mail, or touches the network.
 
 ## Milestones
 
-1. [ ] Skeleton: packaging, config, `check`, `install-fetter`, event parsing, fixture streams recorded from fetter.
+1. [x] Skeleton: packaging, config, `check`, `install-fetter`, event parsing, fixture streams recorded from fetter.
 2. [ ] Supervisor and store: launch, attach, restart, control channel, `events/` log, headless `run` (log only).
 3. [ ] Digest folding and render (text and HTML), `digest --preview`.
 4. [ ] Delivery and scheduler: Postmark and SMTP, digests and immediate alerts, catch-up, `state.json`.
