@@ -39,13 +39,6 @@ def test_check_old_configured_binary(home, tmp_path, capsys):
     assert "is fetter 3.1.0" in out and "[fetter] binary" in out
 
 
-def test_unimplemented(capsys, home):
-    assert main(["--home", str(home.root)]) == 2
-    assert "milestone 5" in capsys.readouterr().err
-
-
-def test_run_requires_headless_for_now(home, capsys):
-    assert main(["run", "--home", str(home.root)]) == 2
 
 
 def test_run_refuses_config_errors(home, capsys):
@@ -123,3 +116,9 @@ def test_digest_html(home, capsys, monkeypatch):
 def test_digest_nothing(home, capsys):
     assert main(["digest", "--home", str(home.root)]) == 0
     assert "nothing recorded" in capsys.readouterr().out
+
+
+def test_tui_refuses_missing_fetter(home, capsys):
+    assert main(["--home", str(home.root)]) == 1
+    assert main(["run", "--home", str(home.root)]) == 1
+    assert "install-fetter" in capsys.readouterr().err

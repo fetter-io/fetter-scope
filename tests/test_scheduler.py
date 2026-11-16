@@ -341,13 +341,13 @@ def test_cli_check_verifies_mail(home, monkeypatch, capsys):
 # headless ------------------------------------------------------------------------
 
 async def test_headless_sends_immediate_alert(home):
-    from fetter_scope.supervisor import Headless
+    from fetter_scope.supervisor import Runtime
     from tests.test_supervisor import FAST, cmd
     home.root.mkdir(parents=True)
     home.config.write_text("[mail]\nenabled = true\n")
     cfg = config.load(home, environ=ENV)
     store, sender, out = Store(home), Sender(), []
-    h = Headless(cmd("--fake-report-status", "alert"), store, out=out.append, timing=FAST,
+    h = Runtime(cmd("--fake-report-status", "alert"), store, out=out.append, timing=FAST,
                  mailer=Mailer(cfg, store, send=sender), mail_every=3600)
     task = asyncio.create_task(h.run())
     deadline = time.monotonic() + 10

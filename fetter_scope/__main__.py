@@ -14,6 +14,7 @@ import os
 import shlex
 import sys
 import tempfile
+import time
 import webbrowser
 from pathlib import Path
 
@@ -24,15 +25,7 @@ from fetter_scope.digest import last_digest_end
 from fetter_scope.scheduler import Mailer
 from fetter_scope.home import Home
 from fetter_scope.store import Store
-from fetter_scope.supervisor import Headless, follow, print_followed
-
-
-def _not_yet(milestone: int):
-    def run(args: argparse.Namespace) -> int:
-        print(f"fetter-scope {args.command}: not yet implemented (milestone {milestone})",
-              file=sys.stderr)
-        return 2
-    return run
+from fetter_scope.supervisor import Runtime, follow, print_followed
 
 
 def cmd_check(args: argparse.Namespace) -> int:
@@ -95,34 +88,72 @@ def _load_runnable(args: argparse.Namespace):
     if not p.ok:
         print(f"fetter-scope: {p.error}; {fetter_bin.install_hint(resolved)}", file=sys.stderr)
         return None
-    return cfg, resolved
+    return cfg, resolved, p
+
+
+def cmd_tui(args: argparse.Namespace) -> int:
+    """The TUI, running fetter: the pending period is replayed from events/ first."""
+    loaded = _load_runnable(args)
+    if loaded is None:
+        return 1
+    cfg, resolved, probe = loaded
+    from fetter_scope.model import Model
+    from fetter_scope.tui import ScopeApp
+    cfg.home.ensure()
+    store = Store(cfg.home)
+    mailer = Mailer(cfg, store)
+    model = Model(feed_limit=cfg.tui.feed_limit)
+    since = last_digest_end(store.read_state())
+    for p in store.iter_entries(since=since if since is not None else time.time() - 86400):
+        model.add(p)
+    model.fetter = "not running"           # until this run's launch
+    runtime = Runtime(fetter_bin.monitor_diff_command(resolved.path, cfg.fetter), store,
+                      out=None, retention_days=cfg.store.retention_days, mailer=mailer,
+                      signals=False)
+    app = ScopeApp(model, runtime=runtime, store=store, mailer=mailer, period=cfg.fetter.period,
+                   baseline=cfg.fetter.baseline or "rolling", fetter_version=probe.version_str,
+                   theme=cfg.tui.theme)
+    runtime.tap = app.ingest
+    app.run()
+    return 0
 
 
 def cmd_run(args: argparse.Namespace) -> int:
     if not args.headless:
-        return _not_yet(5)(args)
+        return cmd_tui(args)
     loaded = _load_runnable(args)
     if loaded is None:
         return 1
-    cfg, resolved = loaded
+    cfg, resolved, _ = loaded
     cfg.home.ensure()
     store = Store(cfg.home)
-    headless = Headless(fetter_bin.monitor_diff_command(resolved.path, cfg.fetter),
+    headless = Runtime(fetter_bin.monitor_diff_command(resolved.path, cfg.fetter),
                         store, out=lambda s: print(s, flush=True),
                         retention_days=cfg.store.retention_days, mailer=Mailer(cfg, store))
     return asyncio.run(headless.run())
 
 
 def cmd_attach(args: argparse.Namespace) -> int:
-    """Until the TUI (milestone 5), print one line per event."""
+    """Follow a stream read-only: the TUI, or with --print one line per entry."""
     path = Path(args.file).expanduser()
     if not path.exists():
         print(f"fetter-scope attach: {path}: not found", file=sys.stderr)
         return 1
-    try:
-        asyncio.run(follow(path, print_followed(lambda s: print(s, flush=True))))
-    except KeyboardInterrupt:
-        pass
+    if args.print:
+        try:
+            asyncio.run(follow(path, print_followed(lambda s: print(s, flush=True))))
+        except KeyboardInterrupt:
+            pass
+        return 0
+    from fetter_scope.model import Model
+    from fetter_scope.tui import ScopeApp
+    home = Home.locate(args.home)
+    cfg = config_mod.load(home, args.config)
+    # fetter-scope's own events/ directory: its home's state gives the digest period
+    store = Store(Home(path.parent)) if path.is_dir() and path.name == "events" else None
+    model = Model(feed_limit=cfg.tui.feed_limit, attached=True)
+    ScopeApp(model, follow_path=path, store=store, period=cfg.fetter.period,
+             baseline=cfg.fetter.baseline or "rolling", theme=cfg.tui.theme).run()
     return 0
 
 
@@ -190,8 +221,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--version", action="version", version=f"fetter-scope {__version__}")
     sub = parser.add_subparsers(dest="command", metavar="COMMAND")
 
-    p = sub.add_parser("tui", parents=[common], help="the terminal app (default)")
-    p.set_defaults(func=_not_yet(5))
+    p = sub.add_parser("tui", parents=[common], help="the terminal app, running fetter (default)")
+    p.set_defaults(func=cmd_tui)
     p = sub.add_parser("run", parents=[common], help="run fetter and the event log (and mail)")
     p.add_argument("--headless", action="store_true",
                    help="without the TUI, printing one line per event (for a service)")
@@ -200,6 +231,7 @@ def build_parser() -> argparse.ArgumentParser:
                        help="follow a stream fetter writes itself (`monitor-diff json -o FILE`), "
                             "or fetter-scope's events/ directory")
     p.add_argument("file")
+    p.add_argument("--print", action="store_true", help="print one line per entry, without the TUI")
     p.set_defaults(func=cmd_attach)
     p = sub.add_parser("digest", parents=[common],
                        help="preview (the default) or send the digest of everything since the last one")
@@ -230,7 +262,7 @@ def main(argv: list[str] | None = None) -> int:
     args.config = getattr(args, "config", None)
     if args.command is None:
         args.command = "tui"
-        args.func = _not_yet(5)
+        args.func = cmd_tui
     return args.func(args)
 
 

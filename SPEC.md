@@ -72,7 +72,7 @@ Rules for the supervisor:
 - **Write failures** (a broken pipe) mean fetter has exited; the exit handling above applies.
 - `--control` requires a period above 0, which fetter-scope always uses.
 
-**Attach mode:** `fetter-scope attach FILE` follows a stream that fetter writes itself (`monitor-diff ... json -o FILE`, e.g. under launchd or systemd), without launching fetter. `FILE` may also be fetter-scope's own `events/` directory: its daily files are read in order and the newest is followed, moving on at midnight. The file is read from its start, then followed through appends, truncation and replacement. There is no control channel in this mode, so rescan and report-now are disabled. (A file or socket control channel in fetter would enable them; `--control` takes a value so one can be added.)
+**Attach mode:** `fetter-scope attach FILE` follows a stream that fetter writes itself (`monitor-diff ... json -o FILE`, e.g. under launchd or systemd), without launching fetter. `FILE` may also be fetter-scope's own `events/` directory: its daily files are read in order and the newest is followed, moving on at midnight. The file is read from its start, then followed through appends, truncation and replacement. There is no control channel in this mode, so rescan and report-now are disabled. `attach --print` prints one line per entry instead of opening the TUI. (A file or socket control channel in fetter would enable them; `--control` takes a value so one can be added.)
 
 ## Configuration
 
@@ -151,9 +151,9 @@ Folding is pure: event dicts in, a JSON-serializable digest dict out (stored wit
   - the pending digest's counts.
 - **Alerts:** one row per alert item, its type first: `vuln`, `hook`, `downgrade`, `violation`. Then ecosystem, package or site, detail, report time, and whether it has been mailed.
   - For a vulnerability, the detail is the ID, CVSS score, source and summary.
-  - Enter opens a detail screen: the full summary, severity vector, OSV URL (with copy), and the sites holding the package.
+  - Enter opens a detail screen: the full summary, severity vector, OSV URL (with copy), and the sites holding the package. The stream names a package's sites only in package changes, so for a package unchanged since the baseline the sites are not known (see Open questions).
 - **Changes:** every package change from reports, with the kind (added, removed, upgraded, downgraded, changed), ecosystem, site, name, from and to, and time.
-  - Filters: ecosystem, kind and site substring.
+  - Filters (`/`, per tab): `key:value` words match a column (e.g. `eco:npm kind:down site:proj`), other words match any column; all case-insensitive substrings.
   - A toggle switches between "since last digest" (the folded view) and "all reports".
 - **Live:** the `scan` events' changes since the previous scan as they arrive, newest first. These come before fetter's next report, so the live view leads the report.
 - **Vulnerabilities:** current new and resolved vulnerabilities for the pending digest period, sortable by CVSS, with copy for the ID and URL.
@@ -170,13 +170,16 @@ Folding is pure: event dicts in, a JSON-serializable digest dict out (stored wit
 | `m` | send the digest now (sends `report` first in launch mode, then sends the digest when that report or scan event arrives, or after 2 minutes) |
 | `p` | preview the digest's HTML in a browser (a temp file) |
 | `c` | copy the selected row's package, ID or URL (OSC 52, plus the clipboard tool when present, as in assistant-bom) |
-| `/` | filter |
+| `/` | filter the current tab; Escape clears |
+| `t` | Changes: folded since the last digest, or every report |
+| `1`–`5` | switch tabs |
+| Enter, Escape | open and close an alert's detail |
 | `l` | reload `config.toml` (mail settings only; changing fetter settings needs a restart) |
-| `q` | quit; fetter is stopped |
+| `q` | quit; fetter is stopped (`stop`, then terminated after 30 s; `q` again terminates it now) |
 
 Column headers sort, as in assistant-bom.
 
-**Headless:** `fetter-scope run --headless` runs the same supervisor, storage and mail scheduler without the TUI, for a launchd or systemd service. The TUI can then `attach` to the stored stream to view it.
+**Headless:** `fetter-scope run --headless` runs the same supervisor, storage and mail scheduler without the TUI, for a launchd or systemd service. The TUI can then `attach` to the stored stream to view it. `fetter-scope`, `tui` and `run` without `--headless` open the TUI running fetter; it first replays the pending period from `events/`, so the tabs are not empty at start.
 
 ## Mail
 
@@ -228,6 +231,7 @@ fetter_scope/
   render.py             digest → HTML (inline styles) and text
   delivery.py           Postmark and SMTP; send_digest, send_alert → sent | failed | skipped
   scheduler.py          digest and alert timing; pure given "now"
+  model.py              what the TUI shows, folded from entries (no Textual; tested directly)
   tui.py                the Textual app
 tests/
   fixtures/streams/     recorded monitor-diff streams (user, host and paths made generic, as fetter's tests/fixtures/monitor)
@@ -262,7 +266,7 @@ No test runs a real fetter scan, sends mail, or touches the network.
 2. [x] Supervisor and store: launch, attach, restart, control channel, `events/` log, headless `run` (log only).
 3. [x] Digest folding and render (text and HTML), `digest --preview`.
 4. [x] Delivery and scheduler: Postmark and SMTP, digests and immediate alerts, catch-up, `state.json`.
-5. [ ] TUI: header, Overview, Alerts (with detail), Changes, Live, Log.
+5. [x] TUI: header, Overview, Alerts (with detail), Changes, Live, Log.
 6. [ ] TUI: Vulnerabilities, Hooks, Mail tabs; keys; sorting and copy.
 7. [ ] launchd and systemd examples, README.
 
@@ -278,6 +282,7 @@ No test runs a real fetter scan, sends mail, or touches the network.
 - **Transient changes in fetter:** fetter's reports already miss changes that appear and disappear between two of its reports. Should fetter-scope set `report_period = period` by default so that every scan can be reported (the default above), or should fetter accumulate them itself (fetter SPEC milestone 27 follow-up)?
 - **Net classification after folding:** for the net kind of a folded package change (first `from` → last `to`), should fetter add a `compare` field, or a small `fetter compare-versions` command, rather than relying on the last step's kind?
 - **Report acknowledgement:** after a `report` command, a `request` scan with no report following means nothing changed, but a reader can only tell by waiting. Should fetter always write a report for a `report` command (as `--report always` does), or emit a small `report-skipped` event?
+- **Sites of an unchanged package:** the alert detail should list the sites holding a vulnerable package, but the stream names sites only in package changes. Should `VulnFinding` carry the package's sites, so a `published` advisory against an unchanged package can say where it is installed?
 - **Control in attach mode:** should fetter add a file or socket control channel (`--control fifo:PATH`?) so a TUI attached to a service's stream can rescan? Until then, attach mode is read-only.
 - **Settled:** a rescan trigger (fetter's `--control stdin`) and per-ecosystem counts (`scan.counts`) were added to fetter before 5.0.0.
 - **Settled:** data, configuration and the fetter binary live in `~/.fetter-scope/`, not a repository directory, since the events contain local paths.

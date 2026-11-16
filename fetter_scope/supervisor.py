@@ -468,23 +468,33 @@ def log_line(p: Parsed) -> str:
 
 
 @dataclass
-class Headless:
-    """`run --headless`: the supervisor, the event log and mail, printing one line per entry."""
+class Runtime:
+    """The supervisor, the event log and mail: what `run` does, with or without the TUI.
+
+    Every entry is stored, then printed with `out` (headless) and passed to `tap` (the TUI).
+    With `signals`, SIGINT and SIGTERM stop fetter cleanly (headless; the TUI handles its own).
+    """
     cmd: list[str]
     store: Store
-    out: Callable[[str], None] = print
+    out: Callable[[str], None] | None = print
     retention_days: int = 90
     timing: Timing = field(default_factory=Timing)
     prune_every: float = 3600
     mailer: "Mailer | None" = None
     mail_every: float = 30
+    tap: Callable[[Parsed], None] | None = None
+    signals: bool = True
 
     def __post_init__(self):
         self._tasks: set[asyncio.Task] = set()
+        self.supervisor = Supervisor(self.cmd, self.sink, self.store, self.timing)
 
     def sink(self, p: Parsed) -> None:
         self.store.append(p)
-        self.out(log_line(p))
+        if self.out is not None:
+            self.out(log_line(p))
+        if self.tap is not None:
+            self.tap(p)
         if self.mailer is not None and self.mailer.on_entry(p):
             task = asyncio.get_running_loop().create_task(self._mail_tick())
             self._tasks.add(task)
@@ -502,11 +512,12 @@ class Headless:
         if self.mailer is not None:
             self.mailer.emit = self.sink
             self.mailer.start()
-            self.out(f"{time.strftime('%Y-%m-%d %H:%M:%S')}  {self.mailer.status()}")
-        sup = self.supervisor = Supervisor(self.cmd, self.sink, self.store, self.timing)
+            if self.out is not None:
+                self.out(f"{time.strftime('%Y-%m-%d %H:%M:%S')}  {self.mailer.status()}")
+        sup = self.supervisor
         loop = asyncio.get_running_loop()
         signals = []
-        for sig in (signal.SIGINT, signal.SIGTERM):
+        for sig in (signal.SIGINT, signal.SIGTERM) if self.signals else ():
             try:
                 loop.add_signal_handler(sig, lambda: asyncio.ensure_future(sup.stop()))
                 signals.append(sig)

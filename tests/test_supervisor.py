@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from fetter_scope.store import Store
-from fetter_scope.supervisor import Headless, Supervisor, Timing, stop_stale
+from fetter_scope.supervisor import Runtime, Supervisor, Timing, stop_stale
 
 FAKE = Path(__file__).parent / "fake_fetter.py"
 STREAMS = Path(__file__).parent / "fixtures" / "streams"
@@ -270,7 +270,7 @@ def test_stop_stale_nothing_recorded(home):
 async def test_headless_logs_and_stops(home):
     out = []
     store = Store(home)
-    h = Headless(cmd(), store, out=out.append, timing=FAST)
+    h = Runtime(cmd(), store, out=out.append, timing=FAST)
     task = asyncio.create_task(h.run())
     deadline = time.monotonic() + 10
     while not any("scan (start)" in line for line in out):
