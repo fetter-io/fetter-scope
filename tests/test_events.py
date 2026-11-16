@@ -108,3 +108,48 @@ def test_duration_seconds():
     assert duration_seconds({"secs": 2}) == 2
     assert duration_seconds(None) is None
     assert duration_seconds({"secs": "2"}) is None
+
+
+# own entries and summaries ------------------------------------------------------
+
+from fetter_scope.events import own, summary  # noqa: E402
+
+
+def test_own_entry_roundtrip():
+    p = own("fetter-exit", now=100.25, code=1, expected=False, restart_in=5)
+    assert p.own and p.known and p.kind == "fetter-exit"
+    back = parse_line(p.line)
+    assert back.own and back.event == p.event
+    assert back.event["time"] == {"secs": 100, "nanos": 250_000_000}
+    assert not parse_line(json.dumps(base())).own
+
+
+def test_summaries_of_fixtures():
+    lines = [summary(parse_line(x)) for x in (STREAMS / "changes.jsonl").read_text().splitlines()]
+    assert lines[0] == "start: baseline rolling, scan every 600s, report every 600s, npm"
+    assert lines[1] == "scan (start): 1 origin, 1 site, 1 package"
+    assert lines[2] == "scan (request): 1 origin, 1 site, 2 packages; +1 ↓1 packages"
+    assert lines[4].startswith("report ALERT: +1 ↓1 packages; ") and "new vulns" in lines[4]
+    assert lines[5].startswith("error: Unknown control command")
+
+
+@pytest.mark.parametrize("kind,fields,text", [
+    ("launch", {"pid": 7}, "launched fetter (pid 7)"),
+    ("fetter-exit", {"code": 1, "expected": False, "restart_in": 5},
+     "fetter exited with 1 (unexpected); restarting in 5s"),
+    ("fetter-exit", {"code": 0, "expected": True}, "fetter exited with 0"),
+    ("stderr", {"line": "boom"}, "stderr: boom"),
+    ("control", {"command": "scan"}, "sent scan"),
+    ("supervisor-error", {"message": "m"}, "supervisor-error: m"),
+    ("stale-stop", {"pid": 3}, "stopped a fetter left running by an earlier fetter-scope (pid 3)"),
+])
+def test_own_summaries(kind, fields, text):
+    assert summary(own(kind, **fields)) == text
+
+
+def test_summary_unknown_newer_raw():
+    assert summary(parse_line(json.dumps(base(event="checkpoint")))) == "checkpoint (unknown event)"
+    assert summary(parse_line(json.dumps(base(schema=2, trigger="period")))).startswith("[schema 2] scan")
+    assert summary(parse_line("panic")) == "raw: panic"
+    r = base(event="report", report={"status": "changed", "audit_error": "offline"})
+    assert summary(parse_line(json.dumps(r))) == "report changed: audit error: offline"

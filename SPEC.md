@@ -53,7 +53,7 @@ A line that is not JSON, or an event with a `schema` greater than 1, is kept in 
 
 **Process lifecycle:**
 - **Unexpected exit:** fetter-scope restarts fetter with exponential backoff (5 s doubling to 10 min) and records a `fetter-exit` entry. Three exits in a row with no `scan` event in between stop the restarts and raise a visible error.
-- **Exit code 3:** fetter exits with 3 when its last report was an alert. In run-once mode (unused here) that is the alert signal; fetter 5.0.0 also does it after `stop` when the last report was an alert (observed recording `tests/fixtures/streams/changes.jsonl`). So an exit with 0 or 3 after fetter-scope wrote `stop` is a clean stop; any exit not preceded by `stop` is unexpected.
+- **Exit code 3:** fetter exits with 3 when its last report was an alert. In run-once mode (unused here) that is the alert signal; fetter 5.0.0 also does it after `stop` when the last report it evaluated was an alert, written or not (`monitor_diff_loop` returns that flag; observed recording `tests/fixtures/streams/changes.jsonl`). So an exit with 0 or 3 after fetter-scope wrote `stop` is a clean stop; any exit not preceded by `stop` is unexpected.
 - **Stopping** (quit, or a configuration change that needs a restart): fetter-scope writes `stop`, waits up to 30 s for the process to exit (a scan in progress finishes first), then terminates it. A child killed mid-report does not advance the rolling baseline, so either way nothing is lost.
 
 **Control channel:** fetter is launched with `--control stdin`, and fetter-scope writes commands to its stdin, one per line, UTF-8, ending in `\n`:
@@ -67,12 +67,12 @@ A line that is not JSON, or an event with a `schema` greater than 1, is kept in 
 
 Rules for the supervisor:
 - **Commands are read only between scans.** A command sent during a scan waits until it ends, and each command runs its own scan. fetter-scope therefore keeps at most one request outstanding: after writing `scan` or `report`, it ignores further `s`/`r` presses (the footer shows "rescanning…") until a `scan` event with `trigger: "request"` arrives, or 10 minutes pass.
-- **Acknowledgement is the next `request` scan event.** There is no request id; with one outstanding request, the next `request` scan answers it. A `report` request is complete at the following `report` event, or at that scan event if nothing changed and no report was written.
+- **Acknowledgement is the next `request` scan event.** There is no request id; with one outstanding request, the next `request` scan answers it. A `report` request is complete at the following `report` event, or at that scan event if nothing changed and no report was written. The stream does not say which, so after the `request` scan fetter-scope waits for the report until the next event or 2 minutes, then takes the scan as the answer (see Open questions).
 - **A closed stdin is not a stop.** If fetter-scope's end of the pipe closes (fetter-scope crashed), fetter keeps scanning on its period. fetter-scope's next start finds no child it owns and launches a new one, so a stray fetter could run alongside. To prevent this, fetter-scope records the child's pid in `state.json` and on start stops a recorded process that is still running fetter (`stop` is impossible without its stdin, so it is terminated).
 - **Write failures** (a broken pipe) mean fetter has exited; the exit handling above applies.
 - `--control` requires a period above 0, which fetter-scope always uses.
 
-**Attach mode:** `fetter-scope attach FILE` follows a stream that fetter writes itself (`monitor-diff ... json -o FILE`, e.g. under launchd or systemd), without launching fetter. There is no control channel in this mode, so rescan and report-now are disabled. (A file or socket control channel in fetter would enable them; `--control` takes a value so one can be added.)
+**Attach mode:** `fetter-scope attach FILE` follows a stream that fetter writes itself (`monitor-diff ... json -o FILE`, e.g. under launchd or systemd), without launching fetter. `FILE` may also be fetter-scope's own `events/` directory: its daily files are read in order and the newest is followed, moving on at midnight. The file is read from its start, then followed through appends, truncation and replacement. There is no control channel in this mode, so rescan and report-now are disabled. (A file or socket control channel in fetter would enable them; `--control` takes a value so one can be added.)
 
 ## Configuration
 
@@ -121,21 +121,21 @@ If mail is enabled but not configured, the app shows "mail not configured" and k
 
 ## Digest: folding reports over time
 
-fetter compares each report with the last reported state, so a digest covering several reports has to combine them. `digest.fold(reports)` combines the reports since the last digest into one view:
+fetter compares each report with the last reported state, so a digest covering several reports has to combine them. `digest.fold(entries, start, end)` combines the period's stored entries (fetter's events and fetter-scope's own, since problems come from both) into one view. With a rolling baseline, reports are chained as below. With a fixed baseline (`--baseline FILE`), every report is against that baseline, so the last report is the net change and items in earlier reports but not the last are transient. A period that mixes both (a configuration change) is chained.
 
 - **Packages**, keyed by `(ecosystem, site, key)`:
   - keep the earliest `from` and the latest `to`;
   - if they are equal, the change cancelled out; it is listed under **Transient**, e.g. "installed then removed between 02:10 and 02:40", because a short-lived package is itself a signal;
-  - otherwise the kind is recomputed from the net change. Added then removed is transient; added then upgraded is added at the final version. Upgrade versus downgrade is taken from fetter's own classification of the last step whenever the versions match it, and otherwise is `changed`, so Python never re-implements version ordering. See Open questions.
+  - otherwise the kind is recomputed from the net change. Added then removed is transient; added then upgraded is added at the final version. Upgrade versus downgrade is taken from fetter's own classification: the last step's kind when it spans the same versions as the net change; otherwise the common kind when every step was an upgrade (or every one a downgrade), since ordering is transitive; otherwise `changed`. Python never re-implements version ordering. See Open questions.
 - **Sites, origins and hooks:** net added or removed, by key; anything that cancelled out goes under Transient.
 - **Vulnerabilities**, keyed by `(ecosystem, package key, id)`:
   - new and later resolved within the period is listed as **Transient**, "fixed within the period";
   - otherwise net new (with the first `source` seen) or net resolved.
 - **Violations:** the same as vulnerabilities, keyed by the record.
-- **Problems:** audit errors, `error` events, fetter restarts, and periods with no `scan` event at all, all with times.
+- **Problems:** audit errors, `error` events, unexpected fetter exits, protocol and supervisor errors, and periods with no `scan` event for more than twice the scan period plus a minute (including stretches when fetter-scope was not running), all with times.
 - **Status:** `alert` if any report in the period was an alert, even if it later cancelled out; otherwise `changed` or `unchanged`. The digest also lists each alert report it contains, with its time.
 
-Folding is pure: report dicts in, a digest dict out. It is tested against recorded streams.
+Folding is pure: event dicts in, a JSON-serializable digest dict out (stored with each sent digest). It is tested against recorded streams. A digest is *eventful*, and so sent without `send_unchanged`, if its status is not `unchanged` or it has changes, transient items, resolved vulnerabilities or problems.
 
 ## Displays (Textual)
 
@@ -185,9 +185,11 @@ Column headers sort, as in assistant-bom.
 - **Body:** HTML with inline styles (no classes or SVG), plus a text alternative.
   - Section order: alerts first (new vulnerabilities by CVSS, new hooks, downgrades, new violations), then problems, transient items, and package changes grouped by ecosystem and site. Resolved items come last.
   - The body stays under Gmail's ~102 KB clipping limit. Long change lists are cut with "and N more", and the full folded digest is attached as JSON.
-- **Schedule:** a digest is due at `every` (aligned to `at` and `weekday`). It is sent if anything happened in the period, or always when `send_unchanged` is set. A digest whose window passed while the app was not running is sent at the next start, covering the time since the last one.
-- **Immediate alerts:** when a `report` with status `alert` arrives and `alerts = "immediate"`, a short alert mail with that report's alert items is sent, rate-limited by `alert_min_interval`. Those items are still included in the digest, marked "mailed".
-- **Failure handling:** a failed send is retried at the next scheduler tick, with backoff up to an hour, and is shown in the Mail tab. The digest period does not advance until the send succeeds, so nothing is dropped.
+- **Schedule:** a digest is due at the first boundary after the last one was made. Boundaries are a fixed reference (a Monday, moved to `at` and `weekday`) plus multiples of `every`, in local wall-clock time, so a daily digest stays at `at` across DST and a `6h` or `2d` schedule is the same from run to run. It is sent if the digest is eventful (see Digest), or always when `send_unchanged` is set; otherwise its period still ends. A digest whose boundary passed while the app was not running is sent at the next start, covering the time since the last one. Without any digest state, the first digest covers everything already stored.
+- **Period edges:** a period ends just after the latest entry it includes, not at the moment of sending. fetter writes in time order, so an event still in the pipe when a mail is built falls in the next period instead of between the two.
+- **Immediate alerts:** when a `report` with status `alert` arrives and `alerts = "immediate"`, a short alert mail (the alert sections only, no attachment) covering the alert reports since the last alert mail is sent, rate-limited by `alert_min_interval`; one arriving sooner waits and joins the next. Those items are still included in the digest, marked "mailed": state.json keeps the spans the alert mails covered until a digest passes them.
+- **Failure handling:** a failed send is retried with backoff (1 minute, doubling to an hour), and is shown in the Mail tab. The digest period does not advance until the send succeeds, so nothing is dropped. Every attempt is logged as a `mail` entry in `events/`, so a failed one is also a problem in the next digest.
+- **Scheduler ticks:** `run` checks every 30 s, and at once when an alert report arrives. `digest --send` sends the pending digest now, whatever the schedule, and `check` verifies the credentials without sending (Postmark's server endpoint, or an SMTP login; `--offline` skips it).
 
 ## Storage
 
@@ -197,14 +199,16 @@ Everything fetter-scope keeps is in one directory, `~/.fetter-scope/` on every p
 config.toml                 configuration (or --config FILE)
 .env                        credentials
 bin/fetter                  fetter-scope's own fetter (see Contract with fetter)
-events/YYYY-MM-DD.jsonl     every event as received, plus fetter-scope's own entries (fetter-exit, stderr), one per line; daily files
-state.json                  last digest time and result, last alert-mail time, mail backoff
-mail/YYYY-MM-DDTHHMM.json   each digest sent (the folded dict), with .html and .txt beside it
+events/YYYY-MM-DD.jsonl     every event line as received, plus fetter-scope's own entries, one per line; daily files (local date)
+state.json                  digest (period start, last run, result, backoff), alerts (covered spans, pending, backoff), mail history, the running fetter
+mail/YYYY-MM-DDTHHMM.json   each digest sent (the folded dict), with .html and .txt beside it; alert mails as YYYY-MM-DDTHHMM-alert.*
 ```
 
 - On start, the pending period's reports are rebuilt from `events/` since `state.json`'s last digest time. A restart therefore loses nothing.
 - Retention: `events/` older than 90 days is removed (`[store] retention_days`). Files under `mail/` are kept.
 - Writes are append-and-flush for events, and temp-file-and-rename for `state.json`.
+- fetter-scope's own entries are JSON objects shaped like events, with `"source": "fetter-scope"` (fetter's readers ignore them as unknown events): `launch` (pid, command), `fetter-exit` (code, expected, restart_in, terminated), `stderr` (line), `stdout` (a stdout line that is not an event), `control` (a command written), `protocol-error`, `supervisor-error` (restarts stopped), and `stale-stop` (a fetter left running by an earlier fetter-scope was stopped).
+- `state.json` holds the running fetter's pid and binary while it runs, for the stale-process check.
 
 ## Repository layout
 
@@ -213,14 +217,14 @@ A separate repository, `fetter-scope`. It is a sibling of `fetter-rs`, not part 
 ```
 pyproject.toml          uv_build backend; textual, python-dotenv; dev: pytest, pytest-asyncio
 fetter_scope/
-  __main__.py           CLI: (default) tui, run [--headless], attach FILE, digest [--send|--preview], check, install-fetter
+  __main__.py           CLI: (default) tui, run [--headless], attach FILE, digest [--preview|--html|--json|--send], check, install-fetter
   home.py               the ~/.fetter-scope directory and its paths
   fetter_bin.py         resolve, version-check and install fetter-scope's own fetter binary
   config.py             config.toml + .env → frozen dataclasses
   events.py             event parsing (tolerant), the schema 1 event types as TypedDicts
   supervisor.py         launch, read, restart and stop fetter (asyncio subprocess); control channel (one outstanding request); attach (follow a file)
   store.py              events/, state.json, mail/
-  digest.py             fold(reports) → digest; pure
+  digest.py             fold(entries, start, end) → digest; pure
   render.py             digest → HTML (inline styles) and text
   delivery.py           Postmark and SMTP; send_digest, send_alert → sent | failed | skipped
   scheduler.py          digest and alert timing; pure given "now"
@@ -255,9 +259,9 @@ No test runs a real fetter scan, sends mail, or touches the network.
 ## Milestones
 
 1. [x] Skeleton: packaging, config, `check`, `install-fetter`, event parsing, fixture streams recorded from fetter.
-2. [ ] Supervisor and store: launch, attach, restart, control channel, `events/` log, headless `run` (log only).
-3. [ ] Digest folding and render (text and HTML), `digest --preview`.
-4. [ ] Delivery and scheduler: Postmark and SMTP, digests and immediate alerts, catch-up, `state.json`.
+2. [x] Supervisor and store: launch, attach, restart, control channel, `events/` log, headless `run` (log only).
+3. [x] Digest folding and render (text and HTML), `digest --preview`.
+4. [x] Delivery and scheduler: Postmark and SMTP, digests and immediate alerts, catch-up, `state.json`.
 5. [ ] TUI: header, Overview, Alerts (with detail), Changes, Live, Log.
 6. [ ] TUI: Vulnerabilities, Hooks, Mail tabs; keys; sorting and copy.
 7. [ ] launchd and systemd examples, README.
@@ -273,6 +277,7 @@ No test runs a real fetter scan, sends mail, or touches the network.
 
 - **Transient changes in fetter:** fetter's reports already miss changes that appear and disappear between two of its reports. Should fetter-scope set `report_period = period` by default so that every scan can be reported (the default above), or should fetter accumulate them itself (fetter SPEC milestone 27 follow-up)?
 - **Net classification after folding:** for the net kind of a folded package change (first `from` → last `to`), should fetter add a `compare` field, or a small `fetter compare-versions` command, rather than relying on the last step's kind?
+- **Report acknowledgement:** after a `report` command, a `request` scan with no report following means nothing changed, but a reader can only tell by waiting. Should fetter always write a report for a `report` command (as `--report always` does), or emit a small `report-skipped` event?
 - **Control in attach mode:** should fetter add a file or socket control channel (`--control fifo:PATH`?) so a TUI attached to a service's stream can rescan? Until then, attach mode is read-only.
 - **Settled:** a rescan trigger (fetter's `--control stdin`) and per-ecosystem counts (`scan.counts`) were added to fetter before 5.0.0.
 - **Settled:** data, configuration and the fetter binary live in `~/.fetter-scope/`, not a repository directory, since the events contain local paths.

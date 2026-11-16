@@ -42,3 +42,84 @@ def test_check_old_configured_binary(home, tmp_path, capsys):
 def test_unimplemented(capsys, home):
     assert main(["--home", str(home.root)]) == 2
     assert "milestone 5" in capsys.readouterr().err
+
+
+def test_run_requires_headless_for_now(home, capsys):
+    assert main(["run", "--home", str(home.root)]) == 2
+
+
+def test_run_refuses_config_errors(home, capsys):
+    fake_fetter(home.fetter)
+    home.config.write_text("[fetter]\nperiod = 0\n")
+    assert main(["run", "--headless", "--home", str(home.root)]) == 1
+    assert "has errors" in capsys.readouterr().err
+
+
+def test_run_refuses_old_fetter(home, capsys):
+    fake_fetter(home.fetter, "4.0.0")
+    assert main(["run", "--headless", "--home", str(home.root)]) == 1
+    assert "requires 5.0.0" in capsys.readouterr().err
+
+
+def test_run_refuses_missing_fetter(home, capsys):
+    assert main(["run", "--headless", "--home", str(home.root)]) == 1
+    assert "install-fetter" in capsys.readouterr().err
+
+
+def test_attach_missing_file(tmp_path, capsys):
+    assert main(["attach", str(tmp_path / "nope.jsonl")]) == 1
+
+
+# digest ---------------------------------------------------------------------------
+
+import json  # noqa: E402
+from pathlib import Path  # noqa: E402
+
+from fetter_scope.events import parse_line  # noqa: E402
+from fetter_scope.store import Store  # noqa: E402
+
+STREAMS = Path(__file__).parent / "fixtures" / "streams"
+
+
+def stored(home):
+    lines = (STREAMS / "changes.jsonl").read_text().splitlines()
+    t = json.loads(lines[0])["time"]["secs"]
+    store = Store(home, now=lambda: t)
+    for line in lines:
+        store.append(parse_line(line))
+    store.close()
+    return t
+
+
+def test_digest_preview(home, capsys):
+    stored(home)
+    assert main(["digest", "--home", str(home.root)]) == 0
+    out = capsys.readouterr().out
+    assert out.startswith("Subject: fetter host · ALERT · 3 new vulns · 1 downgrade · 2 changes")
+    assert "Downgrades" in out and "attached as JSON" not in out
+
+
+def test_digest_json_since_last_digest(home, capsys):
+    t = stored(home)
+    assert main(["digest", "--json", "--home", str(home.root)]) == 0
+    assert json.loads(capsys.readouterr().out)["reports"] == 1
+    Store(home).update_state(digest={"last_end": t + 3600})
+    assert main(["digest", "--json", "--home", str(home.root)]) == 0
+    assert "nothing recorded" in capsys.readouterr().out
+
+
+def test_digest_html(home, capsys, monkeypatch):
+    stored(home)
+    opened = []
+    monkeypatch.setattr("webbrowser.open", opened.append)
+    assert main(["digest", "--html", "--home", str(home.root)]) == 0
+    path = Path(capsys.readouterr().out.strip())
+    try:
+        assert opened == [path.as_uri()] and path.read_text().startswith("<!doctype html>")
+    finally:
+        path.unlink()
+
+
+def test_digest_nothing(home, capsys):
+    assert main(["digest", "--home", str(home.root)]) == 0
+    assert "nothing recorded" in capsys.readouterr().out

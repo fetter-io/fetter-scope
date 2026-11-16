@@ -8,13 +8,23 @@
     fetter-scope install-fetter        install fetter-scope's own fetter binary
 """
 import argparse
+import asyncio
+import json
+import os
 import shlex
 import sys
+import tempfile
+import webbrowser
+from pathlib import Path
 
 from fetter_scope import __version__
 from fetter_scope import config as config_mod
-from fetter_scope import fetter_bin
+from fetter_scope import delivery, fetter_bin, render
+from fetter_scope.digest import last_digest_end
+from fetter_scope.scheduler import Mailer
 from fetter_scope.home import Home
+from fetter_scope.store import Store
+from fetter_scope.supervisor import Headless, follow, print_followed
 
 
 def _not_yet(milestone: int):
@@ -59,10 +69,100 @@ def cmd_check(args: argparse.Namespace) -> int:
             print(f"  mail not configured: {', '.join(missing)} not set "
                   f"(in {cfg.path.parent / '.env'} or the environment)")
             ok = False
+        elif args.offline:
+            print("  credentials not checked (--offline)")
+        else:
+            v = delivery.verify(m.transport, cfg.credentials)
+            print(f"  credentials {'accepted' if v.ok else 'rejected: ' + v.error} (nothing sent)")
+            ok &= v.ok
 
     print("would run:")
     print("  " + shlex.join(fetter_bin.monitor_diff_command(resolved.path, cfg.fetter)))
     return 0 if ok else 1
+
+
+def _load_runnable(args: argparse.Namespace):
+    """Config and a usable fetter binary, or None after printing why not."""
+    home = Home.locate(args.home)
+    cfg = config_mod.load(home, args.config)
+    if cfg.errors:
+        print(f"fetter-scope: {cfg.path} has errors (see `fetter-scope check`):", file=sys.stderr)
+        for e in cfg.errors:
+            print(f"  {e}", file=sys.stderr)
+        return None
+    resolved = fetter_bin.resolve(cfg.fetter, home)
+    p = fetter_bin.probe(resolved.path)
+    if not p.ok:
+        print(f"fetter-scope: {p.error}; {fetter_bin.install_hint(resolved)}", file=sys.stderr)
+        return None
+    return cfg, resolved
+
+
+def cmd_run(args: argparse.Namespace) -> int:
+    if not args.headless:
+        return _not_yet(5)(args)
+    loaded = _load_runnable(args)
+    if loaded is None:
+        return 1
+    cfg, resolved = loaded
+    cfg.home.ensure()
+    store = Store(cfg.home)
+    headless = Headless(fetter_bin.monitor_diff_command(resolved.path, cfg.fetter),
+                        store, out=lambda s: print(s, flush=True),
+                        retention_days=cfg.store.retention_days, mailer=Mailer(cfg, store))
+    return asyncio.run(headless.run())
+
+
+def cmd_attach(args: argparse.Namespace) -> int:
+    """Until the TUI (milestone 5), print one line per event."""
+    path = Path(args.file).expanduser()
+    if not path.exists():
+        print(f"fetter-scope attach: {path}: not found", file=sys.stderr)
+        return 1
+    try:
+        asyncio.run(follow(path, print_followed(lambda s: print(s, flush=True))))
+    except KeyboardInterrupt:
+        pass
+    return 0
+
+
+def cmd_digest(args: argparse.Namespace) -> int:
+    home = Home.locate(args.home)
+    cfg = config_mod.load(home, args.config)
+    for e in cfg.errors:
+        print(f"warning: {e}", file=sys.stderr)
+    store = Store(home)
+    mailer = Mailer(cfg, store)
+    since = last_digest_end(store.read_state())
+    if not any(p.event is not None for p in store.iter_entries(since=since)):
+        print(f"nothing recorded in {home.events} since the last digest")
+        return 0
+    if args.send:
+        if missing := cfg.mail_missing:
+            print(f"fetter-scope digest: mail not configured: {', '.join(missing)} not set "
+                  f"(in {cfg.path.parent / '.env'} or the environment)", file=sys.stderr)
+            return 1
+        result = asyncio.run(mailer.send_digest(force=True))
+        if not result.ok:
+            print(f"fetter-scope digest: {result.status}: {result.error}", file=sys.stderr)
+            return 1
+        print(f"sent to {', '.join(cfg.credentials.email_to)}")
+        return 0
+    d = mailer.pending()
+    if args.json:
+        print(json.dumps(d, indent=2, ensure_ascii=False))
+        return 0
+    html_body, text_body, _ = render.fit(d, attached=False)
+    if args.html:
+        fd, path = tempfile.mkstemp(prefix="fetter-scope-digest-", suffix=".html")
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(html_body)
+        print(path)
+        webbrowser.open(Path(path).as_uri())
+        return 0
+    print(f"Subject: {render.subject(d, cfg.mail.subject_prefix)}\n")
+    print(text_body, end="")
+    return 0
 
 
 def cmd_install_fetter(args: argparse.Namespace) -> int:
@@ -92,19 +192,27 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("tui", parents=[common], help="the terminal app (default)")
     p.set_defaults(func=_not_yet(5))
-    p = sub.add_parser("run", parents=[common], help="run without the TUI")
-    p.add_argument("--headless", action="store_true")
-    p.set_defaults(func=_not_yet(2))
-    p = sub.add_parser("attach", parents=[common], help="follow a stream fetter writes itself")
+    p = sub.add_parser("run", parents=[common], help="run fetter and the event log (and mail)")
+    p.add_argument("--headless", action="store_true",
+                   help="without the TUI, printing one line per event (for a service)")
+    p.set_defaults(func=cmd_run)
+    p = sub.add_parser("attach", parents=[common],
+                       help="follow a stream fetter writes itself (`monitor-diff json -o FILE`), "
+                            "or fetter-scope's events/ directory")
     p.add_argument("file")
-    p.set_defaults(func=_not_yet(2))
-    p = sub.add_parser("digest", parents=[common], help="send or preview the pending digest")
+    p.set_defaults(func=cmd_attach)
+    p = sub.add_parser("digest", parents=[common],
+                       help="preview (the default) or send the digest of everything since the last one")
     g = p.add_mutually_exclusive_group()
-    g.add_argument("--send", action="store_true")
-    g.add_argument("--preview", action="store_true")
-    p.set_defaults(func=_not_yet(3))
+    g.add_argument("--send", action="store_true", help="send it now")
+    g.add_argument("--preview", action="store_true", help="print its subject and text body")
+    g.add_argument("--html", action="store_true", help="write its HTML to a temp file and open it")
+    g.add_argument("--json", action="store_true", help="print the folded digest")
+    p.set_defaults(func=cmd_digest)
     p = sub.add_parser("check", parents=[common],
                        help="validate configuration, fetter and mail; print what would run")
+    p.add_argument("--offline", action="store_true",
+                   help="do not contact the mail service to check credentials")
     p.set_defaults(func=cmd_check)
     p = sub.add_parser("install-fetter", parents=[common],
                        help=f"install fetter {fetter_bin.FETTER_VERSION} into the home directory")
