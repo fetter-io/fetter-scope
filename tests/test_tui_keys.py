@@ -276,6 +276,7 @@ async def test_ecosystem_selector_is_global():
         assert app.hidden_ecos == {"npm"}
         assert [r[1] for r in rows(app, "alerts")] == ["python", "python"]
         assert [b.value for b in bar.boxes()] == [False, False, True]
+        assert [b.BUTTON_INNER.strip() for b in bar.boxes()] == ["○", "○", "●"]
         await show(pilot, "3")                           # the same selection on other tabs
         assert {r[1] for r in rows(app, "changes")} == {"python"}
         changes_bar = app.query_one("#changes-ecos", EcoBar)
@@ -311,3 +312,31 @@ async def test_ecosystem_selector_counts_follow_text_filter_and_skip_other_tabs(
         assert not app.query("#sites-ecos")
         await show(pilot, "e")
         assert app.focused is None or not isinstance(app.focused.parent, EcoBar)
+
+
+async def test_ecosystem_selector_at_the_same_height_on_every_tab():
+    """Each tab with the selector has a one-row status line above it, so it does not move."""
+    for size in (SIZE, (80, 30)):                   # narrow: long status lines are cut, not wrapped
+        app = ScopeApp(two_ecosystems(), now=lambda: T0 + 100)
+        async with app.run_test(size=size) as pilot:
+            ys = {}
+            for key, tab in (("2", "alerts"), ("3", "changes"), ("4", "live"), ("5", "vulns"),
+                             ("7", "hooks")):
+                await show(pilot, key)
+                ys[tab] = app.query_one(f"#{tab}-ecos", EcoBar).region.y
+                assert app.query_one(f"#{tab}-mode", Static).region.height == 1
+            assert len(set(ys.values())) == 1, ys
+            assert "1 report" in text(app, "#alerts-mode")
+
+
+async def test_changes_and_live_status_name_what_they_compare_with():
+    app = ScopeApp(loaded("quiet", "changes", attached=True), baseline="/b.json")
+    async with app.run_test(size=SIZE) as pilot:
+        await show(pilot, "4")
+        assert text(app, "#live-mode").startswith("Changes since the previous scan")
+        await show(pilot, "3")
+        assert "since the last report" in text(app, "#changes-mode")   # the stream's start: rolling
+        app.model.start = dict(app.model.start, baseline="/b.json")
+        app.refresh_views(force=True)
+        await pilot.pause(0.1)
+        assert text(app, "#changes-mode").startswith("Package changes since the baseline")

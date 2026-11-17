@@ -51,7 +51,7 @@ async def test_tabs_fill_from_model():
         assert len(alerts) == 6 and alerts[0][0] == "downgrade"   # newest first
         await show(pilot, "3")
         assert [r[0] for r in rows(app, "changes")] == ["downgraded", "added"]
-        assert "folded" in text(app, "#changes-mode")
+        assert "since the last report, folded" in text(app, "#changes-mode")
         await show(pilot, "4")
         assert len(rows(app, "live")) == 2
         await show(pilot, "9")
@@ -64,7 +64,7 @@ async def test_filter_and_toggle():
     async with app.run_test(size=SIZE) as pilot:
         await show(pilot, "3")
         await show(pilot, "t")
-        assert "Every report" in text(app, "#changes-mode")
+        assert "since the last report, every report" in text(app, "#changes-mode")
         await show(pilot, "slash")
         box = app.query_one("#filter", Input)
         assert box.has_focus and not box.disabled

@@ -315,6 +315,31 @@ class Detail(ModalScreen):
 AlertDetail = Detail      # the name milestone 5 used
 
 
+class EcoBox(Checkbox):
+    """A checkbox marked ● when on and ○ when off (Textual's marks only change colour), with no
+    box: Textual's half-block edges draw a dark sliver beside a round mark."""
+    ON, OFF = "●", "○"
+    BUTTON_LEFT = BUTTON_RIGHT = ""
+    DEFAULT_CSS = """
+    EcoBox > .toggle--button { background: transparent; color: $text-muted; }
+    EcoBox.-on > .toggle--button { background: transparent; color: $text-success; }
+    EcoBox.-textual-compact:focus > .toggle--button {
+        background: $block-cursor-background; color: $block-cursor-foreground; }
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._mark()
+
+    def _mark(self) -> None:
+        # a space before the mark, so the focus highlight wraps it as the label's padding does
+        self.BUTTON_INNER = " " + (self.ON if self.value else self.OFF)
+
+    def watch_value(self) -> None:
+        self._mark()
+        super().watch_value()
+
+
 class EcoBar(Horizontal):
     """A row of ecosystem checkboxes above a tab's table. The selection is the app's, shared by
     every tab that has one; each bar counts its own tab's rows per ecosystem.
@@ -327,7 +352,7 @@ class EcoBar(Horizontal):
     DEFAULT_CSS = """
     EcoBar { height: 1; padding: 0 1; }
     EcoBar > Label { color: $text-muted; margin-right: 1; }
-    EcoBar > Checkbox { margin-right: 2; }
+    EcoBar > Checkbox { margin-right: 1; }
     EcoBar > Checkbox.-textual-compact:focus { border: none !important; }
     """
 
@@ -351,7 +376,7 @@ class EcoBar(Horizontal):
         if names != self.names:
             self.names = names
             self.remove_children()
-            self.mount(Label("ecosystems"), *[Checkbox(label(n), value(n), name=n, compact=True)
+            self.mount(Label("ecosystems"), *[EcoBox(label(n), value(n), name=n, compact=True)
                                               for n in names])
             return
         for box in self.query(Checkbox):
@@ -397,6 +422,8 @@ class ScopeApp(App):
     .note { color: $text-muted; }
     .heading { text-style: bold; margin: 1 0 0 0; }
     #changes-mode, #vulns-mode, #sites-mode, #hooks-mode { padding: 0 1; }
+    /* one row, always: the ecosystem selector under it stays at the same height on every tab */
+    .mode { height: 1; padding: 0 1; text-wrap: nowrap; text-overflow: ellipsis; }
     #mail-body { padding: 0 1; }
     #mail-table { height: auto; max-height: 10; }
     #mail-preview-box { height: 1fr; border: round $panel; }
@@ -460,24 +487,26 @@ class ScopeApp(App):
                     yield Sparkline([], id="spark")
                     yield Static(id="ov-digest")
             with TabPane("Alerts", id="alerts"):
+                yield Static(id="alerts-mode", classes="mode")
                 yield EcoBar("alerts")
                 yield DataTable(id="alerts-table", cursor_type="row", zebra_stripes=True)
             with TabPane("Changes", id="changes"):
-                yield Static(id="changes-mode")
+                yield Static(id="changes-mode", classes="mode")
                 yield EcoBar("changes")
                 yield DataTable(id="changes-table", cursor_type="row", zebra_stripes=True)
             with TabPane("Live", id="live"):
+                yield Static(id="live-mode", classes="mode")
                 yield EcoBar("live")
                 yield DataTable(id="live-table", cursor_type="row", zebra_stripes=True)
             with TabPane("Vulnerabilities", id="vulns"):
-                yield Static(id="vulns-mode")
+                yield Static(id="vulns-mode", classes="mode")
                 yield EcoBar("vulns")
                 yield DataTable(id="vulns-table", cursor_type="row", zebra_stripes=True)
             with TabPane("Sites", id="sites"):
                 yield Static(id="sites-mode")
                 yield DataTable(id="sites-table", cursor_type="row", zebra_stripes=True)
             with TabPane("Hooks", id="hooks"):
-                yield Static(id="hooks-mode")
+                yield Static(id="hooks-mode", classes="mode")
                 yield EcoBar("hooks")
                 yield DataTable(id="hooks-table", cursor_type="row", zebra_stripes=True)
             with TabPane("Mail", id="mail"):
@@ -932,20 +961,28 @@ class ScopeApp(App):
             else:
                 targets[a.key] = (a.subject, "")
             details[a.key] = a
+        m = self.model
+        self.query_one("#alerts-mode", Static).update(Text(
+            (f"{plural(len(m.alerts), 'alert')} in {plural(len(m.reports), 'report')}, newest "
+             "first: new vulnerabilities, hooks, downgrades and violations. Enter shows one.") if m.reports else "No report yet: alerts appear with fetter's reports.",
+            style="dim"))
         self._show_ecos("alerts", counts)
         self._draw("alerts", ["Type", "Ecosystem", "Package / hook", "Site", "Detail",
                               "Reported", "Mailed"], rows, targets, details)
 
     def draw_changes(self) -> None:
         q = self.filters.get("changes", "")
+        base = (self.model.start or {}).get("baseline") or self.baseline
+        since = "the last report" if base == "rolling" else "the baseline"   # what a report compares with
         if self.folded:
             d = self.pending_digest()
             items = list(reversed(digest_change_rows(d))) if d else []
-            mode = (f"Since the last digest ({hhmm(d['start'])}), folded: net change per package"
-                    if d else "Since the last digest: nothing recorded yet")
+            mode = (f"Package changes since {since}, folded since the last "
+                    f"digest ({hhmm(d['start'])}): net change per package"
+                    if d else f"Package changes since {since}: nothing recorded yet")
         else:
             items = list(reversed(self.model.changes))
-            mode = "Every report's package changes, newest first"
+            mode = f"Package changes since {since}, every report, newest first"
         self.query_one("#changes-mode", Static).update(Text(mode + "  (t switches)", style="dim"))
         rows, targets, counts = [], {}, {}
         for c in items:
@@ -977,6 +1014,12 @@ class ScopeApp(App):
                                  Text(r.change, style=KIND_STYLE.get(r.change, "")), r.ecosystem,
                                  Text(r.name, style="bold"), r.detail], [r.time] + [None] * 6))
             targets[r.key] = (r.name, "")
+        last = self.model.last_scan
+        self.query_one("#live-mode", Static).update(Text(
+            (f"Changes since the previous scan, newest first (latest scan "
+             f"{hhmm((last.get('time') or {}).get('secs'), seconds=True)}): packages, sites, "
+             "origins and hooks, ahead of fetter's next report.")
+            if last else "No scan yet: each scan's changes appear here as they arrive.", style="dim"))
         self._show_ecos("live", counts)
         self._draw("live", ["Time", "Trigger", "What", "Change", "Ecosystem", "Name", "Detail"],
                    rows, targets)
