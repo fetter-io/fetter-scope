@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  ~/Library/LaunchAgents/io.fetter.fetter-scope.plist
+
+  fetter-scope, headless, as a per-user agent: it scans your own home, with the home
+  ~/.fetter-scope (config.toml, .env, events/). launchd does not expand ~, so replace
+  /Users/YOU with your home directory. See README.md, "Running as a service".
+
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/io.fetter.fetter-scope.plist
+    launchctl bootout gui/$(id -u)/io.fetter.fetter-scope
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>io.fetter.fetter-scope</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/YOU/.local/bin/fetter-scope</string>
+    <string>run</string>
+    <string>--headless</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <!-- restart after a crash or an exit 1 (fetter-scope stopped restarting fetter), not after a clean stop -->
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+  <key>ThrottleInterval</key>
+  <integer>600</integer>
+  <!-- SIGTERM lets fetter-scope write `stop` and wait 30 s for a scan in progress -->
+  <key>ExitTimeOut</key>
+  <integer>45</integer>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>LowPriorityIO</key>
+  <true/>
+  <key>Nice</key>
+  <integer>10</integer>
+  <!-- 0077: files it creates are yours alone -->
+  <key>Umask</key>
+  <integer>63</integer>
+  <!-- every event is already in ~/.fetter-scope/events/; keep only errors -->
+  <key>StandardOutPath</key>
+  <string>/dev/null</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/YOU/.fetter-scope/launchd.log</string>
+</dict>
+</plist>

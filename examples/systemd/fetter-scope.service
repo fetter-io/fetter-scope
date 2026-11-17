@@ -1,0 +1,108 @@
+# /etc/systemd/system/fetter-scope.service
+#
+# fetter-scope as a locked-down system service: `run --headless` (fetter, the event log, mail),
+# scanning every user's home read-only. See README.md, "Running as a service".
+#
+#   /opt/fetter-scope/                 the install (venv, managed Python, bin/fetter); root-owned
+#   /etc/fetter-scope/config.toml      configuration, read-only to the service
+#   /etc/fetter-scope/credentials.env  mail secrets (.env format), root 0600; passed in as the
+#                                      systemd credential `dotenv`, never in the environment
+#   /var/lib/fetter-scope/             the home: events/, state.json, sites.json, mail/, and
+#                                      fetter's cache (its rolling baseline) in fetter/
+#
+# Check the result with `systemd-analyze security fetter-scope.service`.
+
+[Unit]
+Description=fetter-scope: fetter monitor-diff with email digests and alerts
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=exec
+ExecStart=/opt/fetter-scope/bin/fetter-scope --home /var/lib/fetter-scope --config /etc/fetter-scope/config.toml run --headless
+
+# A transient user with no login, home or files outside the state directory.
+DynamicUser=yes
+# fetter-scope's home, and fetter's cache (its rolling baseline) in it: fetter does not create it
+StateDirectory=fetter-scope fetter-scope/fetter
+StateDirectoryMode=0700
+UMask=0077
+LoadCredential=dotenv:/etc/fetter-scope/credentials.env
+Environment=PYTHONDONTWRITEBYTECODE=1
+
+# SIGTERM goes to fetter-scope only, which writes `stop` to fetter and waits up to 30 s for a
+# scan in progress; whatever is left after 45 s is killed.
+KillMode=mixed
+TimeoutStopSec=45s
+# fetter-scope restarts fetter itself and gives up (exit 1) after three exits with no scan in
+# between; retry that slowly rather than undoing it.
+Restart=on-failure
+RestartSec=10min
+
+# A background scanner: low CPU and I/O priority.
+Nice=10
+CPUSchedulingPolicy=batch
+IOSchedulingClass=idle
+
+# Reading every user's packages needs to bypass read and search permission, nothing more. To
+# watch one tree instead, drop both lines and give fetter `--root DIR` in config.toml.
+AmbientCapabilities=CAP_DAC_READ_SEARCH
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH
+NoNewPrivileges=yes
+
+# Filesystem: everything read-only except the state directory.
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+# Nothing executable outside root-owned system paths. fetter runs each Python interpreter it
+# finds (`python3 -S -c ...`) to learn its site-packages, and the ambient capability is passed
+# on to it: allowed to execute under /home, any local user could plant a `bin/python3` beside a
+# `pyvenv.cfg` and run code with this service's read access. A venv linking to /usr/bin/python3
+# is still scanned; one whose interpreter lives in a home (uv-managed Pythons, pyenv, conda,
+# `venv --copies`) is not. See README.md to trade this for coverage.
+# (the state directory is a separate bind mount, so it is named too)
+NoExecPaths=/ /var/lib/fetter-scope
+ExecPaths=/opt/fetter-scope /usr/bin /usr/local/bin -/usr/lib -/usr/lib64 -/lib -/lib64
+# Secrets it never needs, hidden, since CAP_DAC_READ_SEARCH could otherwise read them.
+InaccessiblePaths=-/etc/fetter-scope/credentials.env -/etc/shadow -/etc/gshadow -/etc/sudoers -/etc/sudoers.d -/etc/ssh -/etc/ssl/private
+
+# Devices, kernel, processes.
+PrivateDevices=yes
+DevicePolicy=closed
+PrivateIPC=yes
+PrivateMounts=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectProc=invisible
+ProcSubset=pid
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+RemoveIPC=yes
+
+# Network: outbound only (OSV for fetter; Postmark or SMTP for mail). Nothing listens; the
+# link-local range (cloud instance metadata) and multicast are unreachable.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SocketBindDeny=any
+IPAddressDeny=link-local multicast
+
+# System calls: the system-service set, less privileged and resource-control calls.
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+SystemCallErrorNumber=EPERM
+
+# Resources.
+MemoryHigh=40%
+MemoryMax=50%
+MemorySwapMax=0
+TasksMax=256
+
+[Install]
+WantedBy=multi-user.target

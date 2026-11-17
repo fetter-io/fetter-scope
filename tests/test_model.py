@@ -111,3 +111,12 @@ def test_same_advisory_at_two_versions_has_distinct_keys():
             packages=[pc("added", "a", to="1"), pc("added", "a", to="1")]))))
     assert [a.key for a in m.alerts] == ["alert:0", "alert:1", "alert:2", "alert:3"]
     assert len({c.key for c in m.changes}) == 4
+
+
+def test_ecosystems_from_scan_and_rows():
+    m = loaded("quiet", "changes")
+    assert m.ecosystems() == ["npm"]
+    m.add(scan(9e9, {"npm": {"origins": 1, "sites": 1, "packages": 0},
+                     "python": {"origins": 1, "sites": 1, "packages": 4},
+                     "cargo": {"origins": 0, "sites": 0, "packages": 0}}))
+    assert m.ecosystems() == ["npm", "python"]      # npm emptied, but has history; cargo never had any

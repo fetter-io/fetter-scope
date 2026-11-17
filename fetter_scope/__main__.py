@@ -59,6 +59,8 @@ def cmd_check(args: argparse.Namespace) -> int:
     else:
         to = ", ".join(cfg.credentials.email_to) or "(none)"
         print(f"mail:    {m.transport} to {to}")
+        sources = [str(f) for f in config_mod.env_files(cfg.path, os.environ)] + ["the environment"]
+        print(f"  credentials from: {', '.join(sources)}")
         if missing := cfg.mail_missing:
             print(f"  mail not configured: {', '.join(missing)} not set "
                   f"(in {cfg.path.parent / '.env'} or the environment)")

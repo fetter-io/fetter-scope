@@ -225,6 +225,16 @@ class Model:
     def counts(self) -> dict[str, dict]:
         return (self.last_scan or {}).get("counts") or {}
 
+    def ecosystems(self) -> list[str]:
+        """The ecosystems worth offering in the selector: those with packages in the latest scan,
+        and any named by a report or scan row (an ecosystem since emptied still has history)."""
+        seen = {eco for eco, c in self.counts().items() if (c or {}).get("packages")}
+        seen.update(a.ecosystem for a in self.alerts)
+        seen.update(c.ecosystem for c in self.changes)
+        seen.update(r.ecosystem for r in self.live)
+        seen.discard("")
+        return sorted(seen)
+
     def dropped_to_zero(self) -> list[str]:
         """Ecosystems with no packages now that had some earlier in the session: more likely a
         scan problem than removals."""

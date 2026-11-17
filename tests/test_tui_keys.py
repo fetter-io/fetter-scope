@@ -11,9 +11,9 @@ from fetter_scope.model import Model
 from fetter_scope.scheduler import Mailer
 from fetter_scope.store import Store
 from fetter_scope.supervisor import Runtime
-from fetter_scope.tui import Detail, ScopeApp, next_sort, ordered
+from fetter_scope.tui import ALL, Detail, EcoBar, ScopeApp, next_sort, ordered
 
-from tests.test_digest import hook, report, vuln
+from tests.test_digest import T0, hook, pc, report, vuln
 from tests.test_model import loaded
 from tests.test_scheduler import ENV, Sender
 from tests.test_supervisor import FAST, cmd
@@ -243,3 +243,71 @@ async def test_fill_makes_repeated_keys_unique():
         table = app.query_one(DataTable)
         fill(table, ["A"], [("k", ["x"], None), ("k", ["y"], None), ("k", ["z"], None)])
         assert [str(k.value) for k in table.rows] == ["k", "k#2", "k#3"]
+
+
+def two_ecosystems() -> Model:
+    """Alerts and changes in npm and python (the fixture streams are npm only)."""
+    def py(d: dict) -> dict:
+        for p in [d.get("package"), d.get("from"), d.get("to")]:
+            if p:
+                p["ecosystem"] = "python"
+        return d | ({"ecosystem": "python"} if "change" in d else {})
+    m = Model(attached=True)
+    m.add(parse_line(json.dumps(report(
+        10, status="alert",
+        packages=[pc("added", "left-pad", to="1.3.0"), py(pc("added", "requests", to="2.19.0")),
+                  py(pc("added", "urllib3", to="1.21"))],
+        new_vulns=[vuln("GHSA-npm", score=7.5), py(vuln("PYSEC-1", key="requests", score=9.8)),
+                   py(vuln("PYSEC-2", key="urllib3"))]))))
+    return m
+
+
+async def test_ecosystem_selector_is_global():
+    app = ScopeApp(two_ecosystems(), now=lambda: T0 + 100)
+    async with app.run_test(size=SIZE) as pilot:
+        await show(pilot, "2")
+        assert sorted(r[1] for r in rows(app, "alerts")) == ["npm", "python", "python"]
+        bar = app.query_one("#alerts-ecos", EcoBar)
+        assert bar.names == [ALL, "npm", "python"]
+        assert [str(b.label) for b in bar.boxes()] == ["all", "npm 1", "python 2"]
+        await show(pilot, "e")                           # focuses npm (the first after "all")
+        assert bar.boxes()[1].has_focus
+        await show(pilot, "space")                       # npm off
+        assert app.hidden_ecos == {"npm"}
+        assert [r[1] for r in rows(app, "alerts")] == ["python", "python"]
+        assert [b.value for b in bar.boxes()] == [False, False, True]
+        await show(pilot, "3")                           # the same selection on other tabs
+        assert {r[1] for r in rows(app, "changes")} == {"python"}
+        changes_bar = app.query_one("#changes-ecos", EcoBar)
+        assert [b.value for b in changes_bar.boxes()] == [False, False, True]
+        await show(pilot, "5")
+        assert {r[3] for r in rows(app, "vulns")} == {"python"}
+        await show(pilot, "e")
+        await show(pilot, "right")                       # python
+        await show(pilot, "o")                           # only python: no change here
+        assert app.hidden_ecos == {"npm"}
+        await show(pilot, "left")
+        await show(pilot, "o")                           # only npm
+        assert app.hidden_ecos == {"python"}
+        assert {r[3] for r in rows(app, "vulns")} == {"npm"}
+        await show(pilot, "left")
+        await show(pilot, "space")                       # "all" on
+        assert app.hidden_ecos == set() and len(rows(app, "vulns")) == 3
+        await show(pilot, "down")                        # back to the table
+        assert app.query_one("#vulns-table").has_focus
+
+
+async def test_ecosystem_selector_counts_follow_text_filter_and_skip_other_tabs():
+    app = ScopeApp(two_ecosystems(), now=lambda: T0 + 100)
+    async with app.run_test(size=SIZE) as pilot:
+        await show(pilot, "2")
+        await show(pilot, "slash")
+        await pilot.press(*"type:vuln")
+        await pilot.pause(0.1)
+        bar = app.query_one("#alerts-ecos", EcoBar)
+        assert [str(b.label) for b in bar.boxes()][1:] == ["npm 1", "python 2"]
+        await pilot.press("escape")
+        await show(pilot, "6")                           # Sites has no selector
+        assert not app.query("#sites-ecos")
+        await show(pilot, "e")
+        assert app.focused is None or not isinstance(app.focused.parent, EcoBar)

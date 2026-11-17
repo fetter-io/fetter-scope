@@ -143,6 +143,29 @@ def test_env_beside_explicit_config(home, tmp_path):
         ("mail.example", 465, "ssl")
 
 
+def test_systemd_credential(home, tmp_path):
+    """`$CREDENTIALS_DIRECTORY/dotenv` (LoadCredential=) wins over .env, loses to the environment."""
+    home.root.mkdir(parents=True)
+    home.env.write_text("REPORT_EMAIL_FROM=file@x.org\nPOSTMARK_SERVER_TOKEN=from-file\n")
+    creds = tmp_path / "creds"
+    creds.mkdir()
+    (creds / "dotenv").write_text("POSTMARK_SERVER_TOKEN=from-credential\nREPORT_EMAIL_TO=b@x.org\n")
+    c = load(home, environ={"CREDENTIALS_DIRECTORY": str(creds)})
+    cr = c.credentials
+    assert (cr.email_from, cr.email_to, cr.postmark_token) == \
+        ("file@x.org", ("b@x.org",), "from-credential")
+    c = load(home, environ={"CREDENTIALS_DIRECTORY": str(creds), "POSTMARK_SERVER_TOKEN": "env"})
+    assert c.credentials.postmark_token == "env"
+    assert config.env_files(home.config, {"CREDENTIALS_DIRECTORY": str(creds)}) == \
+        [home.env, creds / "dotenv"]
+
+
+def test_systemd_credential_absent(home, tmp_path):
+    """A credentials directory without `dotenv` (another credential, or none loaded) is ignored."""
+    c = load(home, environ={"CREDENTIALS_DIRECTORY": str(tmp_path)})
+    assert c.credentials.postmark_token == "" and not c.errors
+
+
 def test_missing_credentials(home):
     c = load(home, '[mail]\nenabled = true\ntransport = "smtp"\n')
     assert c.mail_missing == ["REPORT_EMAIL_FROM", "REPORT_EMAIL_TO", "SMTP_HOST"]

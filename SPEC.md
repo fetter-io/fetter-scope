@@ -20,14 +20,27 @@ This document is preliminary: it fixes the scope and the contract with fetter, a
 
 ## Picking this up
 
-*Last updated 2026-11-16, after milestone 8 (Sites tab) and the move to fetter 5.1.0. Update this section at the end of every session; Milestones is the source of truth for progress.*
+*Last updated 2026-11-16, after milestone 7 (service examples, README). Update this section at the end of every session; Milestones is the source of truth for progress.*
 
 ### Where we are
 
-- **Milestones 1–6 and 8 are done**; 7 (launchd and systemd examples, README) remains.
-- **Uncommitted**: milestones 5, 6 and 8 and the 5.1.0 move are in the working tree (new: `fetter_scope/{model,sites,tui}.py`, `tests/test_{model,sites,tui,tui_keys}.py`); check `git status`. The maintainer commits. fetter-rs has an uncommitted SPEC known-issue entry (hook-derived packages without sites).
+- **All milestones (1–8) are done.** Milestones 5, 6 and 8 were committed in `d4da057`.
+- **Uncommitted**: milestone 7 (`examples/`, README, and the `dotenv` systemd credential in `config.py`), and the ecosystem selector (`EcoBar` in `tui.py`, `Model.ecosystems`; see Displays); check `git status`. The maintainer commits.
+- **Service tested** 2026-11-16 in a Debian trixie container (systemd 257, Docker Desktop, aarch64) with fetter 5.1.0 built by cargo. These were confirmed:
+  - the `--all-users` scan of another user's 0700 home;
+  - the credential (token not in the environment);
+  - `systemctl stop` (fetter-scope sends `stop`, fetter exits 3, which is a clean stop);
+  - `attach` on the service's `events/`;
+  - the three-exit stop under `Restart=`;
+  - the read-only, no-exec and hidden paths, and `IPAddressDeny`;
+  - `systemd-analyze security` 1.6.
+
+  `SocketBindDeny` was not applied by that VM's kernel. In Docker, `LoadCredential` also needs `mount --make-rshared /` first, a container quirk and not part of the unit. Found while testing:
+  - fetter does not create its `--cache-directory` (now made by `StateDirectory=`);
+  - fetter runs the interpreters it discovers (see Open questions);
+  - `ExecPaths=/home` is overridden by `ProtectHome=`'s mount, but paths below `/home` work.
 - **fetter**: requires and installs 5.1.0 (`FETTER_VERSION`, `MIN_VERSION` in `fetter_bin.py`), whose vulnerability findings carry `sites`. 5.1.0 is on crates.io but **not yet on PyPI**, so `install-fetter` without a Rust toolchain fails until the wheel is published.
-- **Health**: `uv run pytest` reports 258 passed (≈40 s; no test runs a real fetter, sends mail or uses the network). `ruff check` has one old finding, `tests/test_delivery.py:105` (E731, a lambda assigned to a name).
+- **Health**: `uv run pytest` reports 260 passed (≈30 s; no test runs a real fetter, sends mail or uses the network). `ruff check` (0.17.5, with no `[tool.ruff]` in `pyproject.toml`, so the rule set depends on the machine) reports 54 findings, mostly import order, quoted annotations and unused `noqa`, plus 4 `ASYNC230` (a blocking `open` in async code) worth a look.
 - **Verified on this machine** (full home scan, 7,336 packages): the Sites tab lists 102 sites with open vulnerabilities from 3,556 findings, 3,540 with sites. That needed fetter's 5.0.0 rolling baseline removed so the next report re-established it (see Displays, Sites); the old file is kept as `~/.cache/io.fetter/monitor_diff_v1_<hash>.json.bak-2026-11-16` and can be deleted. An OSV 503 during one report was handled as designed (no change to the open set; fetter kept its baseline's vulnerabilities).
 
 ### Code map
@@ -46,11 +59,12 @@ This document is preliminary: it fixes the scope and the contract with fetter, a
 
 ### Next
 
-1. **Milestone 7**: launchd and systemd examples for `run --headless`, and a README covering setup, the tabs and keys, mail configuration and the 5.0.0 upgrade.
-2. **fetter: sites of hook-derived packages** (fetter SPEC, Known issues): `diff_report::package_sites` should fall back to the pre-commit config a derived package (e.g. `black` from `psf/black`) was mapped from; 16 findings here lack sites because of it. A fetter patch release; fetter-scope then only bumps `FETTER_VERSION`.
-3. **Re-record the fixture streams** with fetter 5.1.0 (`tests/fixtures/streams/`, recorded under 5.0.0), so the fixtures carry `sites` and the TUI tests exercise them from real output rather than hand-built reports.
-4. **Release check**: confirm the 5.1.0 wheel is on PyPI, then try `install-fetter --method pypi`.
-5. **Open questions** below, notably transient changes between reports, net classification after folding, report acknowledgement, and control in attach mode.
+1. **fetter: interpreters run by a privileged scan** (Open questions): the systemd unit forbids executing anything under homes, so venvs whose interpreter lives in a home are not scanned. A fetter change (site-packages from `pyvenv.cfg` and the layout without running the interpreter, or no inherited capabilities for what it runs) would lift that. It affects fetter-agent's unit too, which allows the execution.
+2. **Lint**: add `[tool.ruff]` to `pyproject.toml` and clear its findings; check the `ASYNC230` ones in the supervisor and attach code.
+3. **fetter: sites of hook-derived packages** (fetter SPEC, Known issues): `diff_report::package_sites` should fall back to the pre-commit config a derived package (e.g. `black` from `psf/black`) was mapped from; 16 findings here lack sites because of it. A fetter patch release; fetter-scope then only bumps `FETTER_VERSION`.
+4. **Re-record the fixture streams** with fetter 5.1.0 (`tests/fixtures/streams/`, recorded under 5.0.0), so the fixtures carry `sites` and the TUI tests exercise them from real output rather than hand-built reports.
+5. **Release check**: confirm the 5.1.0 wheel is on PyPI, then try `install-fetter --method pypi`.
+6. **Open questions** below, notably transient changes between reports, net classification after folding, report acknowledgement, and control in attach mode.
 
 ## Contract with fetter
 
@@ -146,7 +160,7 @@ feed_limit = 2000                 # live change feed entries kept in memory
 retention_days = 90               # events/ files older than this are removed; 0 keeps all
 ```
 
-**Credentials** come from the environment, after loading the `.env` beside `config.toml` (the process environment wins over it), never from `config.toml`:
+**Credentials** come from the environment, never from `config.toml`. Lowest precedence first: the `.env` beside `config.toml`; a systemd credential named `dotenv` in the same format (`$CREDENTIALS_DIRECTORY/dotenv`, from the service's `LoadCredential=`, so a root-only file can feed a `DynamicUser` service); then the process environment. The process environment is never modified, so secrets read from either file are not inherited by fetter. `check` prints which files it read:
 - `REPORT_EMAIL_FROM` and `REPORT_EMAIL_TO` (comma-separated);
 - for Postmark: `POSTMARK_SERVER_TOKEN`;
 - for SMTP: `SMTP_HOST`, `SMTP_PORT` (default 587), `SMTP_USER`, `SMTP_PASSWORD`, and `SMTP_TLS` (`starttls` by default, or `ssl`).
@@ -203,6 +217,8 @@ Folding is pure: event dicts in, a JSON-serializable digest dict out (stored wit
 - **Mail:** status, transport and recipients (the address only, never credentials); the schedule and next digest time; the last digest's time and result (with its error); the alert mode and state; the history of sent and failed mails; and a preview of the pending digest (subject and text body).
 - **Log:** raw events and fetter stderr, filterable by event type. Errors are highlighted.
 
+**Ecosystem selector:** above the Alerts, Changes, Live, Vulnerabilities and Hooks tables, a row of checkboxes: `all`, then each ecosystem the session knows (packages in the latest scan, or named by a report or scan row), each with the number of the tab's rows in it (after the `/` filter). One selection applies to all five tabs; Overview, Sites, Mail and Log are not affected. Rows that name no ecosystem are always shown. The selection is kept for the session only. `e` focuses it; Left and Right move, space toggles, `o` shows only the focused ecosystem, and Down or Escape returns to the table.
+
 **Keys:**
 
 | Key | Action |
@@ -215,6 +231,7 @@ Folding is pure: event dicts in, a JSON-serializable digest dict out (stored wit
 | `u` | copy the selected row's URL (a vulnerability's OSV page) |
 | `/` | filter the current tab; Escape clears |
 | `t` | Changes: folded since the last digest, or every report |
+| `e` | focus the ecosystem selector (Alerts, Changes, Live, Vulnerabilities, Hooks); there, `o` shows only the focused ecosystem |
 | `1`–`9` | switch tabs (Overview, Alerts, Changes, Live, Vulnerabilities, Sites, Hooks, Mail, Log) |
 | Enter, Escape | open and close a row's detail (alert, vulnerability, hook, site) |
 | `l` | reload `config.toml` (mail settings and credentials only; a change to fetter settings is reported as needing a restart; a file with errors is not applied) |
@@ -222,7 +239,12 @@ Folding is pure: event dicts in, a JSON-serializable digest dict out (stored wit
 
 Column headers sort, as in assistant-bom: ascending, then descending, then the original order; numbers numerically and empty cells last. Vulnerabilities starts by CVSS, highest first. While `s`, `r` or `m` waits on fetter or the mail service, the header says so ("rescanning…", "reporting…", "sending digest…"); the UI stays responsive.
 
-**Headless:** `fetter-scope run --headless` runs the same supervisor, storage and mail scheduler without the TUI, for a launchd or systemd service. The TUI can then `attach` to the stored stream to view it. `fetter-scope`, `tui` and `run` without `--headless` open the TUI running fetter; it first replays the pending period from `events/`, so the tabs are not empty at start.
+**Headless:** `fetter-scope run --headless` runs the same supervisor, storage and mail scheduler without the TUI, for a launchd or systemd service (`examples/`; setup in the README). SIGTERM stops fetter as `q` does (`stop`, then terminate after 30 s), so a service allows 45 s and signals only fetter-scope (`KillMode=mixed`). Exit 1 after the three-exit stop is retried by the service manager after 10 minutes, not at once.
+  - **systemd** (`examples/systemd/fetter-scope.service`): a system service with a `DynamicUser`, and only `CAP_DAC_READ_SEARCH` (for `--all-users`).
+    - Files: `/opt/fetter-scope` holds the install; `/etc/fetter-scope/config.toml` the configuration; `/var/lib/fetter-scope` the home, with fetter's `--cache-directory` (its rolling baseline) in `fetter/`. Mail secrets come as the `dotenv` credential.
+    - Execution is allowed only in `/opt/fetter-scope`, `/usr/bin`, `/usr/local/bin` and the libraries, because fetter runs the interpreters it discovers and the capability is passed on to them. Trusted users' homes can be allowed by a drop-in.
+    - The rest is the standard hardening: read-only system and homes, hidden secrets, syscall filter, no W+X memory, outbound network only.
+  - **launchd** (`examples/launchd/io.fetter.fetter-scope.plist`): a per-user LaunchAgent with the usual `~/.fetter-scope`. It restarts on failure (throttled to 10 minutes), runs at background priority with umask 0077, and has a 45 s exit timeout. The TUI can then `attach` to the stored stream to view it. `fetter-scope`, `tui` and `run` without `--headless` open the TUI running fetter; it first replays the pending period from `events/`, so the tabs are not empty at start.
 
 ## Mail
 
@@ -279,6 +301,9 @@ fetter_scope/
   model.py              what the TUI shows, folded from entries (no Textual; tested directly)
   sites.py              open vulnerabilities per site over all history (Inventory; folding pure, saved as sites.json)
   tui.py                the Textual app
+examples/
+  systemd/              fetter-scope.service (a locked-down system service), its config.toml and credentials.env
+  launchd/              io.fetter.fetter-scope.plist (a per-user LaunchAgent)
 tests/
   fixtures/streams/     recorded monitor-diff streams (user, host and paths made generic, as fetter's tests/fixtures/monitor)
   fake_fetter.py        prints a fixture stream with delays, honors --version, can exit early, answers scan/report/stop on stdin
@@ -315,7 +340,7 @@ No test runs a real fetter scan, sends mail, or touches the network.
 4. [x] Delivery and scheduler: Postmark and SMTP, digests and immediate alerts, catch-up, `state.json`.
 5. [x] TUI: header, Overview, Alerts (with detail), Changes, Live, Log.
 6. [x] TUI: Vulnerabilities, Hooks, Mail tabs; keys; sorting and copy.
-7. [ ] launchd and systemd examples, README.
+7. [x] launchd and systemd examples, README.
 8. [x] TUI: Sites tab (per-site open vulnerabilities and CVSS summary), with the open-vulnerability state it needs.
 
 ## Out of scope for now
@@ -331,6 +356,7 @@ No test runs a real fetter scan, sends mail, or touches the network.
 - **Net classification after folding:** for the net kind of a folded package change (first `from` → last `to`), should fetter add a `compare` field, or a small `fetter compare-versions` command, rather than relying on the last step's kind?
 - **Report acknowledgement:** after a `report` command, a `request` scan with no report following means nothing changed, but a reader can only tell by waiting. Should fetter always write a report for a `report` command (as `--report always` does), or emit a small `report-skipped` event?
 - **Sites of hook-derived packages:** fetter 5.1.0 names no sites for a vulnerability in a package it derives from a pre-commit hook (e.g. `black` from `psf/black`); the site should be the `.pre-commit-config.yaml`. Recorded as an open known issue in fetter's SPEC; fetter-scope needs no change when it is fixed.
+- **Interpreters run by a privileged scan:** fetter learns a Python's site-packages by running it (`python3 -S -c …`: `eco/python.rs` `get_site_package_dirs`, also `env_marker.rs`, `util.rs`). As a service with `--all-users` and `CAP_DAC_READ_SEARCH`, that runs any user's `bin/python3` beside a `pyvenv.cfg` with the capability (ambient, so inherited): shown in testing, where a planted script listed `/root`. fetter-scope's unit therefore forbids execution under homes and loses those venvs. Should fetter read a venv's `pyvenv.cfg` and layout instead of running it, or drop inherited capabilities (`PR_CAP_AMBIENT_CLEAR_ALL`) before running a discovered interpreter? Dropping them alone would not be enough, since without the capability fetter cannot run an interpreter inside another user's 0700 home at all; reading the layout covers both.
 - **Control in attach mode:** should fetter add a file or socket control channel (`--control fifo:PATH`?) so a TUI attached to a service's stream can rescan? Until then, attach mode is read-only.
 - **Settled:** a rescan trigger (fetter's `--control stdin`) and per-ecosystem counts (`scan.counts`) were added to fetter before 5.0.0.
 - **Settled:** `VulnFinding` and `VulnResolved` carry `sites` (optional, from fetter 5.1.0; the stream stays at schema 1), so a `published` advisory against an unchanged package says where it is installed. The digest keeps the sites of the latest report naming each vulnerability, and mail shows them.

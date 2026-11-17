@@ -1,0 +1,17 @@
+# /etc/fetter-scope/config.toml, for fetter-scope.service. Every key is optional; see SPEC.md,
+# Configuration. Mail secrets go in /etc/fetter-scope/credentials.env, not here.
+
+[fetter]
+binary = "/opt/fetter-scope/bin/fetter"
+# --all-users: every user's home (the service has CAP_DAC_READ_SEARCH); fetter's cache, which
+# holds its rolling baseline, in the state directory rather than a home it does not have.
+args = ["--all-users", "--cache-directory", "/var/lib/fetter-scope/fetter"]
+period = 600
+report_period = 600
+
+[mail]
+enabled = true
+transport = "postmark"   # or "smtp"
+every = "1d"
+at = "07:00"
+alerts = "immediate"

@@ -10,7 +10,9 @@ Keys: 1–8 switch tabs; `s` rescans and `r` reports now (launch mode); `m` send
 a report, in launch mode); `p` previews its HTML in a browser; `c` copies the selected row's
 package, ID or hook, `u` its URL; `l` reloads mail settings; `/` filters the current tab
 (`key:value` words match a column, other words any column; Escape clears); `t` switches Changes
-between the folded digest view and every report; Enter opens a row's detail; `q` quits,
+between the folded digest view and every report; `e` focuses the ecosystem selector (a row of
+checkboxes above the Alerts, Changes, Live, Vulnerabilities and Hooks tables, one selection for
+all of them; `o` there shows only the focused ecosystem); Enter opens a row's detail; `q` quits,
 stopping fetter first. Column headers sort (again to reverse, a third time for the original order).
 """
 import asyncio
@@ -28,10 +30,10 @@ from pathlib import Path
 from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Vertical, VerticalScroll
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
-from textual.widgets import (DataTable, Footer, Input, Sparkline, Static, TabbedContent,
-                             TabPane)
+from textual.widgets import (Checkbox, DataTable, Footer, Input, Label, Sparkline, Static,
+                             TabbedContent, TabPane)
 
 from fetter_scope import render
 from fetter_scope.digest import last_digest_end
@@ -42,6 +44,8 @@ from fetter_scope.sites import CRITICAL, HIGH, UNNAMED, SiteRow, site_rows
 from fetter_scope.store import Store
 
 TABS = ("overview", "alerts", "changes", "live", "vulns", "sites", "hooks", "mail", "log")
+ECO_TABS = ("alerts", "changes", "live", "vulns", "hooks")   # with the ecosystem selector
+ALL = "*"                                                    # the selector's "all" checkbox
 REFRESH = 0.5          # seconds between view refreshes (only when the model changed)
 DIGEST_EVERY = 10.0    # seconds between recomputing the pending digest while entries arrive
 MAIL_REPORT_WAIT = 120  # `m`: seconds to wait for fetter's report before sending anyway
@@ -311,6 +315,70 @@ class Detail(ModalScreen):
 AlertDetail = Detail      # the name milestone 5 used
 
 
+class EcoBar(Horizontal):
+    """A row of ecosystem checkboxes above a tab's table. The selection is the app's, shared by
+    every tab that has one; each bar counts its own tab's rows per ecosystem.
+
+    Left and right move between the boxes, space or Enter toggles one, `o` shows only the
+    focused ecosystem, and Down or Escape returns to the table."""
+    BINDINGS = [Binding("left", "move(-1)", show=False), Binding("right", "move(1)", show=False),
+                Binding("o", "only", "Only this"),
+                Binding("down,escape", "leave", "Table", show=False)]
+    DEFAULT_CSS = """
+    EcoBar { height: 1; padding: 0 1; }
+    EcoBar > Label { color: $text-muted; margin-right: 1; }
+    EcoBar > Checkbox { margin-right: 2; }
+    EcoBar > Checkbox.-textual-compact:focus { border: none !important; }
+    """
+
+    def __init__(self, tab: str):
+        super().__init__(id=f"{tab}-ecos")
+        self.tab = tab
+        self.names: list[str] = []          # the boxes, in order: ALL, then ecosystems
+
+    def show(self, ecos: list[str], counts: dict[str, int], hidden: set[str]) -> None:
+        """Offer `ecos` (rebuilding the boxes only when the list changes) and check the shown."""
+        names = [ALL] + ecos
+
+        def label(n: str) -> Text:
+            if n == ALL:
+                return Text("all")
+            return Text.assemble(n, " ", (str(counts.get(n, 0)), "dim"))
+
+        def value(n: str) -> bool:
+            return not hidden if n == ALL else n not in hidden
+
+        if names != self.names:
+            self.names = names
+            self.remove_children()
+            self.mount(Label("ecosystems"), *[Checkbox(label(n), value(n), name=n, compact=True)
+                                              for n in names])
+            return
+        for box in self.query(Checkbox):
+            box.label = label(box.name)
+            if box.value != value(box.name):
+                with box.prevent(Checkbox.Changed):
+                    box.value = value(box.name)
+
+    def boxes(self) -> list[Checkbox]:
+        return list(self.query(Checkbox))
+
+    def action_move(self, step: int) -> None:
+        boxes = self.boxes()
+        at = next((i for i, b in enumerate(boxes) if b.has_focus), 0)
+        if boxes:
+            boxes[max(0, min(len(boxes) - 1, at + step))].focus()
+
+    def action_only(self) -> None:
+        focused = next((b for b in self.boxes() if b.has_focus), None)
+        if focused is not None:
+            self.app.only_ecosystem(None if focused.name == ALL else focused.name)
+
+    def action_leave(self) -> None:
+        if (table := self.app._table(self.tab)) is not None:
+            table.focus()
+
+
 #-------------------------------------------------------------------------------
 
 class ScopeApp(App):
@@ -345,6 +413,7 @@ class ScopeApp(App):
         Binding("l", "reload", "Reload", show=False),
         Binding("slash", "filter", "Filter"),
         Binding("t", "toggle_changes", "Folded/all", show=False),
+        Binding("e", "ecosystems", "Ecosystems"),
     ] + [Binding(str(i), f"tab('{tab}')", tab, show=False) for i, tab in enumerate(TABS, 1)]
 
     def __init__(self, model: Model, *, runtime=None, follow_path: Path | None = None,
@@ -369,6 +438,7 @@ class ScopeApp(App):
         self.targets: dict[str, dict[str, tuple[str, str]]] = {}   # tab → row key → (copy, url)
         self.details: dict[str, dict[str, AlertItem | SiteRow]] = {}   # tab → row key → detail item
         self.folded = True
+        self.hidden_ecos: set[str] = set()       # unchecked in the ecosystem selector (all tabs)
         self.busy = ""                           # "sending digest…" while `m` runs
         self._seen: dict[str, tuple] = {}        # tab → what it was last drawn from
         self._digest: dict | None = None
@@ -390,20 +460,25 @@ class ScopeApp(App):
                     yield Sparkline([], id="spark")
                     yield Static(id="ov-digest")
             with TabPane("Alerts", id="alerts"):
+                yield EcoBar("alerts")
                 yield DataTable(id="alerts-table", cursor_type="row", zebra_stripes=True)
             with TabPane("Changes", id="changes"):
                 yield Static(id="changes-mode")
+                yield EcoBar("changes")
                 yield DataTable(id="changes-table", cursor_type="row", zebra_stripes=True)
             with TabPane("Live", id="live"):
+                yield EcoBar("live")
                 yield DataTable(id="live-table", cursor_type="row", zebra_stripes=True)
             with TabPane("Vulnerabilities", id="vulns"):
                 yield Static(id="vulns-mode")
+                yield EcoBar("vulns")
                 yield DataTable(id="vulns-table", cursor_type="row", zebra_stripes=True)
             with TabPane("Sites", id="sites"):
                 yield Static(id="sites-mode")
                 yield DataTable(id="sites-table", cursor_type="row", zebra_stripes=True)
             with TabPane("Hooks", id="hooks"):
                 yield Static(id="hooks-mode")
+                yield EcoBar("hooks")
                 yield DataTable(id="hooks-table", cursor_type="row", zebra_stripes=True)
             with TabPane("Mail", id="mail"):
                 with Vertical(id="mail-body"):
@@ -482,6 +557,44 @@ class ScopeApp(App):
         self.folded = not self.folded
         self.action_tab("changes")
         self.refresh_views(force=True)
+
+    def action_ecosystems(self) -> None:
+        """Focus the ecosystem selector of the current tab (the first box after "all")."""
+        if self.active_tab not in ECO_TABS:
+            self.notify("no ecosystem selector on this tab", severity="warning")
+            return
+        boxes = self.query_one(f"#{self.active_tab}-ecos", EcoBar).boxes()
+        if boxes:
+            boxes[1 if len(boxes) > 1 else 0].focus()
+
+    def on_checkbox_changed(self, event: Checkbox.Changed) -> None:
+        name = event.checkbox.name
+        if name == ALL:
+            bar = event.checkbox.parent
+            self.hidden_ecos = set() if event.value else set(getattr(bar, "names", [])[1:])
+        elif event.value:
+            self.hidden_ecos.discard(name)
+        else:
+            self.hidden_ecos.add(name)
+        self.refresh_views(force=True)
+
+    def only_ecosystem(self, eco: str | None) -> None:
+        """Show only `eco` (None: all) in every tab with the selector."""
+        names = self.query_one(f"#{self.active_tab}-ecos", EcoBar).names[1:]
+        self.hidden_ecos = set() if eco is None else {n for n in names if n != eco}
+        self.refresh_views(force=True)
+
+    def _eco_pass(self, counts: dict[str, int], eco: str) -> bool:
+        """Count a row (one that passed the text filter) for its ecosystem, and whether the
+        selector shows it; a row naming no ecosystem is always shown."""
+        if not eco:
+            return True
+        counts[eco] = counts.get(eco, 0) + 1
+        return eco not in self.hidden_ecos
+
+    def _show_ecos(self, tab: str, counts: dict[str, int]) -> None:
+        ecos = sorted(set(self.model.ecosystems()) | set(counts) | self.hidden_ecos)
+        self.query_one(f"#{tab}-ecos", EcoBar).show(ecos, counts, self.hidden_ecos)
 
     def on_tabbed_content_tab_activated(self, event: TabbedContent.TabActivated) -> None:
         query = self.filters.get(self.active_tab, "")
@@ -802,11 +915,13 @@ class ScopeApp(App):
 
     def draw_alerts(self) -> None:
         q = self.filters.get("alerts", "")
-        rows, targets, details = [], {}, {}
+        rows, targets, details, counts = [], {}, {}, {}
         for a in reversed(self.model.alerts):
             fields = {"type": a.type, "eco": a.ecosystem, "name": a.subject, "site": a.site,
                       "detail": a.detail}
             if q and not matches(q, fields):
+                continue
+            if not self._eco_pass(counts, a.ecosystem):
                 continue
             rows.append((a.key, [Text(a.type, style=TYPE_STYLE.get(a.type, "")), a.ecosystem,
                                  Text(a.subject, style="bold"), a.site, a.detail,
@@ -817,6 +932,7 @@ class ScopeApp(App):
             else:
                 targets[a.key] = (a.subject, "")
             details[a.key] = a
+        self._show_ecos("alerts", counts)
         self._draw("alerts", ["Type", "Ecosystem", "Package / hook", "Site", "Detail",
                               "Reported", "Mailed"], rows, targets, details)
 
@@ -831,31 +947,37 @@ class ScopeApp(App):
             items = list(reversed(self.model.changes))
             mode = "Every report's package changes, newest first"
         self.query_one("#changes-mode", Static).update(Text(mode + "  (t switches)", style="dim"))
-        rows, targets = [], {}
+        rows, targets, counts = [], {}, {}
         for c in items:
             fields = {"kind": c.change, "eco": c.ecosystem, "site": c.site, "name": c.name,
                       "from": c.frm, "to": c.to}
             if q and not matches(q, fields):
                 continue
+            if not self._eco_pass(counts, c.ecosystem):
+                continue
             rows.append((c.key, [Text(c.change, style=KIND_STYLE.get(c.change, "")), c.ecosystem,
                                  c.site, Text(c.name, style="bold"), c.frm, c.to, hhmm(c.time)],
                          [None] * 6 + [c.time]))
             targets[c.key] = (c.name, "")
+        self._show_ecos("changes", counts)
         self._draw("changes", ["Kind", "Ecosystem", "Site", "Name", "From", "To", "Reported"],
                    rows, targets)
 
     def draw_live(self) -> None:
         q = self.filters.get("live", "")
-        rows, targets = [], {}
+        rows, targets, counts = [], {}, {}
         for r in self.model.live:
             fields = {"trigger": r.trigger, "what": r.what, "kind": r.change, "eco": r.ecosystem,
                       "name": r.name, "detail": r.detail}
             if q and not matches(q, fields):
                 continue
+            if not self._eco_pass(counts, r.ecosystem):
+                continue
             rows.append((r.key, [hhmm(r.time, True), r.trigger, r.what,
                                  Text(r.change, style=KIND_STYLE.get(r.change, "")), r.ecosystem,
                                  Text(r.name, style="bold"), r.detail], [r.time] + [None] * 6))
             targets[r.key] = (r.name, "")
+        self._show_ecos("live", counts)
         self._draw("live", ["Time", "Trigger", "What", "Change", "Ecosystem", "Name", "Detail"],
                    rows, targets)
 
@@ -865,7 +987,7 @@ class ScopeApp(App):
         self.query_one("#vulns-mode", Static).update(Text(
             f"Since the last digest ({hhmm(d['start'])}): new, resolved and transient" if d
             else "Since the last digest: nothing recorded yet", style="dim"))
-        rows, targets, details = [], {}, {}
+        rows, targets, details, counts = [], {}, {}, {}
         groups = [] if d is None else [("new", d["vulns"]["new"]),
                                        ("resolved", d["vulns"]["resolved"]),
                                        ("transient", d["transient"]["vulns"])]
@@ -878,6 +1000,8 @@ class ScopeApp(App):
                           "name": pkg.get("name", ""), "source": v.get("source", ""),
                           "summary": v.get("summary", "")}
                 if q and not matches(q, fields):
+                    continue
+                if not self._eco_pass(counts, pkg.get("ecosystem", "")):
                     continue
                 mailed = "mailed" if v.get("mailed") else ""
                 rows.append((key, [Text(v.get("id", "?"), style="bold"),
@@ -892,6 +1016,7 @@ class ScopeApp(App):
                 details[key] = AlertItem(key, "vuln", pkg.get("ecosystem", ""),
                                          f"{pkg.get('name', '?')} {pkg.get('version', '')}".strip(),
                                          "", "", v.get("first") or 0, v, score)
+        self._show_ecos("vulns", counts)
         self._draw("vulns", ["ID", "CVSS", "Status", "Ecosystem", "Package", "Source", "Mailed",
                              "Summary", "Seen"], rows, targets, details)
 
@@ -938,7 +1063,7 @@ class ScopeApp(App):
             (f"Since the last digest ({hhmm(d['start'])}). " if d else "")
             + "A hook runs without being invoked; Enter shows its content, which is never run.",
             style="dim"))
-        rows, targets, details = [], {}, {}
+        rows, targets, details, counts = [], {}, {}, {}
         groups = [] if d is None else [("added", d["hooks"]["added"]),
                                        ("removed", d["hooks"]["removed"]),
                                        ("transient", d["transient"]["hooks"])]
@@ -951,6 +1076,8 @@ class ScopeApp(App):
                           "name": hook.get("name", ""), "content": hook.get("detail", "")}
                 if q and not matches(q, fields):
                     continue
+                if not self._eco_pass(counts, h.get("ecosystem", "")):
+                    continue
                 rows.append((key, [Text(status, style="bold red" if status == "added" else
                                         KIND_STYLE.get(status, "")),
                                    h.get("ecosystem", ""), h.get("site", ""),
@@ -961,6 +1088,7 @@ class ScopeApp(App):
                 details[key] = AlertItem(key, "hook", h.get("ecosystem", ""), hook.get("name", "?"),
                                          h.get("site", ""), "", h.get("first") or 0,
                                          h | {"change": status})
+        self._show_ecos("hooks", counts)
         self._draw("hooks", ["Change", "Ecosystem", "Site", "Hook", "Content", "Seen"], rows,
                    targets, details)
 

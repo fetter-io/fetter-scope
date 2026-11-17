@@ -5,8 +5,9 @@ SPEC.md. Problems (a TOML syntax error, an unknown key, a value of the wrong typ
 not raise: each is collected in `Config.errors`, the default is used in its place, and `check`
 prints them all at once.
 
-Credentials come from the process environment over the `.env` beside config.toml; the
-process environment is not modified.
+Credentials come from the process environment, over a systemd credential named `dotenv`
+(`$CREDENTIALS_DIRECTORY/dotenv`, from `LoadCredential=`; `.env` format), over the `.env` beside
+config.toml. The process environment is not modified, so none of them reaches fetter's.
 """
 import os
 import re
@@ -279,6 +280,18 @@ def _store(s: _Section) -> StoreConfig:
     return StoreConfig(retention_days=s.non_negative("retention_days", 90))
 
 
+CREDENTIAL = "dotenv"                    # the systemd credential holding .env-format secrets
+
+
+def env_files(config_path: Path, environ: Mapping[str, str]) -> list[Path]:
+    """The credential files read, lowest precedence first: the `.env` beside `config_path`, then
+    the systemd credential `$CREDENTIALS_DIRECTORY/dotenv` (a service's `LoadCredential=`)."""
+    found = [config_path.parent / ".env"]
+    if cred_dir := environ.get("CREDENTIALS_DIRECTORY"):
+        found.append(Path(cred_dir) / CREDENTIAL)
+    return [p for p in found if p.is_file()]
+
+
 _SECTIONS = {"fetter": _fetter, "mail": _mail, "tui": _tui, "store": _store}
 
 
@@ -286,7 +299,7 @@ def load(home: Home, config_path: str | os.PathLike | None = None,
          environ: Mapping[str, str] | None = None) -> Config:
     """Read `config_path` (default `home.config`) and the `.env` beside it.
 
-    `environ` defaults to `os.environ`; its values win over `.env`.
+    `environ` defaults to `os.environ`; its values win over the files of `env_files`.
     """
     path = Path(config_path).expanduser() if config_path is not None else home.config
     errors: list[str] = []
@@ -311,11 +324,11 @@ def load(home: Home, config_path: str | os.PathLike | None = None,
     for name in sorted(set(data) - set(_SECTIONS)):
         errors.append(f"[{name}]: unknown table")
 
-    env_path = path.parent / ".env"
+    environ = os.environ if environ is None else environ
     env: dict[str, str] = {}
-    if env_path.is_file():
+    for env_path in env_files(path, environ):
         env.update({k: v for k, v in dotenv_values(env_path).items() if v is not None})
-    env.update(os.environ if environ is None else environ)
+    env.update(environ)
     credentials = Credentials.from_env(env, errors)
 
     return Config(home=home, path=path, found=found, credentials=credentials,
